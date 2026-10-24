@@ -1,0 +1,55 @@
+#pragma once
+/*---------------------------------------------------------------
+ * Main chore screen (spec section 5): header, tile grid, details dialog,
+ * and the Phase 2 dev strip. Hand-written for now; it holds layout and
+ * event forwarding only. All decisions are made by app/app_controller.
+ * Everything here must be called from the LVGL task (the Arduino loop).
+ *--------------------------------------------------------------*/
+#include <stdint.h>
+
+#include <vector>
+
+enum class UiTileState : uint8_t { Overdue, Due, Upcoming, Done };
+
+struct UiTile {
+    uint16_t    id = 0;
+    char        name[40] = {};
+    char        status[40] = {};
+    UiTileState state = UiTileState::Upcoming;
+    uint16_t    streak = 0;
+};
+
+struct UiHeader {
+    char time[12] = {};
+    char date[32] = {};
+    char summary[24] = {};
+    char dev[64] = {};      // dev strip text, ignored when dev tools are off
+    bool dev_anim = true;   // dev strip toggle states
+    bool dev_save = true;
+};
+
+struct UiDetails {
+    uint16_t id = 0;
+    char     name[40] = {};
+    char     schedule[48] = {};
+    char     last[64] = {};
+    char     streak[48] = {};
+    bool     can_undo = false;
+};
+
+struct UiCallbacks {
+    void (*on_tile_tap)(uint16_t id) = nullptr;
+    void (*on_tile_long_press)(uint16_t id) = nullptr;
+    void (*on_undo)(uint16_t id) = nullptr;
+    void (*on_dev_shift_days)(int delta) = nullptr;
+    void (*on_dev_reset)() = nullptr;
+    void (*on_dev_toggle)(int which) = nullptr;   // 0 = completion animation, 1 = saving to flash
+};
+
+void ui_main_create(const UiCallbacks &callbacks);
+
+// Safe to call from inside an LVGL event handler: the redraw is deferred.
+// `pulse_id` makes that tile do a short "completed" pop animation (0 = none).
+void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id);
+
+void ui_main_show_details(const UiDetails &details);

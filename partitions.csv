@@ -1,0 +1,8 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# 4 MB flash. App 2 MB, LittleFS 1.875 MB. Label stays "spiffs" because
+# LittleFS.begin() looks for that label by default.
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x200000,
+spiffs,   data, spiffs,  0x210000, 0x1E0000,
+coredump, data, coredump,0x3F0000, 0x10000,
