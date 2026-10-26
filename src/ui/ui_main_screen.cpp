@@ -43,6 +43,7 @@ UiCallbacks s_cb;
 lv_obj_t *s_clock = nullptr;
 lv_obj_t *s_date = nullptr;
 lv_obj_t *s_summary = nullptr;
+lv_obj_t *s_wifi = nullptr;
 lv_obj_t *s_grid = nullptr;
 lv_obj_t *s_dev_label = nullptr;
 lv_obj_t *s_dev_anim_label = nullptr;
@@ -175,6 +176,7 @@ void apply_update_cb(void *)
     set_label_if_changed(s_clock, s_header.time);
     set_label_if_changed(s_date, s_header.date);
     set_label_if_changed(s_summary, s_header.summary);
+    set_label_if_changed(s_wifi, s_header.wifi);
     if(cfg::DEV_TOOLS) {
         set_label_if_changed(s_dev_label, s_header.dev);
         set_label_if_changed(s_dev_anim_label, s_header.dev_anim ? "Anim ON" : "Anim OFF");
@@ -328,6 +330,14 @@ void ui_main_create(const UiCallbacks &callbacks)
     lv_obj_set_style_text_color(s_summary, lv_color_hex(COLOR_TEXT), 0);
     lv_label_set_text(s_summary, "");
     lv_obj_align(s_summary, LV_ALIGN_TOP_RIGHT, -16, 24);
+
+    // Connection status: small, dim, and directly under the summary so a glance
+    // from across the room is not drawn to it.
+    s_wifi = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_wifi, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_wifi, lv_color_hex(COLOR_TEXT_DIM), 0);
+    lv_label_set_text(s_wifi, "");
+    lv_obj_align(s_wifi, LV_ALIGN_TOP_RIGHT, -16, 70);
 
     s_grid = lv_obj_create(screen);
     lv_obj_set_size(s_grid, cfg::SCREEN_W, GRID_H);

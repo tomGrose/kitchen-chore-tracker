@@ -13,7 +13,10 @@
 #include "app_log.h"
 #include "config.h"
 #include "display/display.h"
+#include "net/wifi_manager.h"
 #include "storage/chore_store.h"
+#include "storage/fs_backend.h"
+#include "storage/settings_store.h"
 #include "time/app_clock.h"
 #include "ui/ui_main_screen.h"
 
@@ -27,8 +30,10 @@ namespace {
 constexpr const char *TAG = "app";
 
 ChoreEngine g_engine;
+Settings g_settings;
 bool g_storage_ok = false;
 DayTime g_last_shown = {-1, -1};
+bool g_time_ready = false;   // set on the first valid clock reading after boot
 uint16_t g_pulse_id = 0;
 uint32_t g_last_tick = 0;
 bool g_dev_anim = true;   // dev toggles for isolating screen glitches (Phase 2 testing)
@@ -152,7 +157,7 @@ void save_now(void *)
 void flush_save_now()
 {
     g_save_pending = false;
-    if(chore_store::writesInternalFlash()) display_run_flash_safe(save_now, nullptr);
+    if(fsbackend::writesInternalFlash()) display_run_flash_safe(save_now, nullptr);
     else save_now(nullptr);
 }
 
@@ -173,11 +178,34 @@ void flush_save_if_due()
     flush_save_now();
 }
 
+// Shown until SNTP answers. The board has no RTC, so before the first sync the
+// date is 1970 and every chore would look years overdue - better to show
+// nothing than to show a screen full of false alarms.
+void refresh_waiting_ui()
+{
+    UiHeader header;
+    snprintf(header.time, sizeof(header.time), "--:--");
+    snprintf(header.date, sizeof(header.date), "Waiting for the time");
+    snprintf(header.summary, sizeof(header.summary), " ");
+    snprintf(header.wifi, sizeof(header.wifi), "%s", wifimgr::statusText());
+
+    char dev_note[16];
+    snprintf(dev_note, sizeof(dev_note), "(%+dd)", appclock::devOffsetDays());
+    snprintf(header.dev, sizeof(header.dev), "%s - %s", dev_note, fsbackend::name());
+    header.time_valid = false;
+    header.dev_anim = g_dev_anim;
+    header.dev_save = g_dev_save;
+
+    ui_main_update(header, {}, 0);
+}
+
 void refresh_ui(const DayTime &now)
 {
     UiHeader header;
     format_time(header.time, sizeof(header.time), now.minute);
     format_long_date(header.date, sizeof(header.date), now.day);
+    snprintf(header.wifi, sizeof(header.wifi), "%s", wifimgr::statusText());
+    header.time_valid = true;
 
     const int remaining = g_engine.remaining(now);
     if(remaining == 0) snprintf(header.summary, sizeof(header.summary), "All done!");
@@ -187,7 +215,7 @@ void refresh_ui(const DayTime &now)
     format_month_day(dev_day, sizeof(dev_day), now.day);
     // Backend shown here because a missing SD card degrades silently to flash.
     snprintf(header.dev, sizeof(header.dev), "%s (%+dd) - %s", dev_day, appclock::devOffsetDays(),
-             chore_store::backendName());
+             fsbackend::name());
     header.dev_anim = g_dev_anim;
     header.dev_save = g_dev_save;
 
@@ -213,6 +241,7 @@ void refresh_ui(const DayTime &now)
 
 void on_tile_tap(uint16_t id)
 {
+    if(!appclock::isValid()) return;
     const DayTime now = appclock::now();
     const Chore *c = g_engine.find(id);
     if(g_engine.complete(id, now, cfg::DEFAULT_USER)) {
@@ -228,6 +257,7 @@ void on_tile_tap(uint16_t id)
 
 void on_tile_long_press(uint16_t id)
 {
+    if(!appclock::isValid()) return;
     const Chore *c = g_engine.find(id);
     if(c == nullptr) return;
 
@@ -256,6 +286,7 @@ void on_tile_long_press(uint16_t id)
 
 void on_undo(uint16_t id)
 {
+    if(!appclock::isValid()) return;
     if(g_engine.undoLast(id)) {
         LOGI(TAG, "undid last completion of chore %u", static_cast<unsigned>(id));
         persist();
@@ -263,10 +294,28 @@ void on_undo(uint16_t id)
     refresh_ui(appclock::now());
 }
 
+// Settings are small and rare; write them straight through, blanking the screen
+// only on the internal-flash fallback.
+void persist_settings()
+{
+    if(!g_storage_ok) return;
+    if(fsbackend::writesInternalFlash()) {
+        display_run_flash_safe([](void *) { settings_store::save(g_settings); }, nullptr);
+    }
+    else if(!settings_store::save(g_settings)) {
+        LOGE(TAG, "could not save settings");
+    }
+}
+
 void on_dev_shift_days(int delta)
 {
-    // The test-clock offset lives in NVS (flash), so write it with the screen blanked.
-    display_run_flash_safe([](void *p) { appclock::devShiftDays(*static_cast<int *>(p)); }, &delta);
+    g_settings.devOffsetDays += delta;
+    appclock::setDevOffsetDays(g_settings.devOffsetDays);
+    persist_settings();
+    if(!appclock::isValid()) {
+        refresh_waiting_ui();
+        return;
+    }
     const DayTime now = appclock::now();
     log_statuses(now);
     refresh_ui(now);
@@ -277,16 +326,23 @@ void on_dev_toggle(int which)
     if(which == 0) g_dev_anim = !g_dev_anim;
     else g_dev_save = !g_dev_save;
     LOGI(TAG, "dev toggles: animation %s, saving %s", g_dev_anim ? "ON" : "OFF", g_dev_save ? "ON" : "OFF");
-    refresh_ui(appclock::now());
+    if(appclock::isValid()) refresh_ui(appclock::now());
+    else refresh_waiting_ui();
 }
 
 void on_dev_reset()
 {
-    LOGW(TAG, "dev reset: wiping stored chores and test-clock offset");
-    display_run_flash_safe([](void *) {
-        chore_store::wipe();
-        appclock::devReset();
-    }, nullptr);
+    LOGW(TAG, "dev reset: wiping stored chores and the test-clock offset");
+    chore_store::wipe();
+    g_settings.devOffsetDays = 0;
+    appclock::setDevOffsetDays(0);
+    persist_settings();
+    if(!appclock::isValid()) {
+        // Reseeding needs today's date; the clock will do it when it syncs.
+        g_engine.data() = ChoreData{};
+        refresh_waiting_ui();
+        return;
+    }
     const DayTime now = appclock::now();
     g_engine.data() = seedChoreData(now.day);
     persist();
@@ -299,22 +355,31 @@ void on_dev_reset()
 
 void init()
 {
-    g_storage_ok = chore_store::begin();
-    appclock::init();
-    g_engine.setEarlyWindowDays(cfg::EARLY_WINDOW_DAYS);
+    g_storage_ok = fsbackend::begin();
 
-    const DayTime now = appclock::now();
+    g_settings = settings_store::defaults();
+    if(g_storage_ok && !settings_store::load(g_settings)) {
+        LOGI(TAG, "no stored settings; writing defaults to %s", fsbackend::name());
+        settings_store::save(g_settings);
+    }
+
+    wifimgr::begin(g_settings.wifiSsid, g_settings.wifiPassword);
+    appclock::init(g_settings.timezonePosix, g_settings.ntpServer, g_settings.devOffsetDays);
+    g_engine.setEarlyWindowDays(cfg::EARLY_WINDOW_DAYS);
 
     ChoreData loaded;
     if(g_storage_ok && chore_store::load(loaded)) {
         g_engine.data() = loaded;
     }
+    else if(!appclock::isValid()) {
+        // Seeding needs today's date to set the anchors, so it waits for the clock.
+        LOGI(TAG, "no saved chores; seeding deferred until the time is known");
+    }
     else {
         LOGI(TAG, "no saved chores; seeding the list from chores.md");
-        g_engine.data() = seedChoreData(now.day);
+        g_engine.data() = seedChoreData(appclock::now().day);
         if(g_storage_ok) save_now(nullptr);   // backlight is still off at boot, so no need to hide the write
     }
-    g_engine.pruneHistory(now.day, cfg::HISTORY_KEEP_DAYS);
 
     UiCallbacks callbacks;
     callbacks.on_tile_tap = on_tile_tap;
@@ -324,21 +389,50 @@ void init()
     callbacks.on_dev_reset = on_dev_reset;
     callbacks.on_dev_toggle = on_dev_toggle;
     ui_main_create(callbacks);
+    refresh_waiting_ui();
+}
 
+// Everything that needs a real date, run once when SNTP first answers.
+void on_time_became_valid()
+{
+    const DayTime now = appclock::now();
+    LOGI(TAG, "clock is live; computing chore status");
+
+    if(g_engine.data().chores.empty()) {
+        LOGI(TAG, "seeding the list from chores.md");
+        g_engine.data() = seedChoreData(now.day);
+        persist();
+    }
+    g_engine.pruneHistory(now.day, cfg::HISTORY_KEEP_DAYS);
     log_statuses(now);
     refresh_ui(now);
 }
 
 void tick()
 {
+    wifimgr::tick();
     flush_save_if_due();
 
     const uint32_t ms = millis();
     if(ms - g_last_tick < 1000) return;
     g_last_tick = ms;
 
+    const bool time_valid = appclock::isValid();
+    if(time_valid && !g_time_ready) {
+        g_time_ready = true;
+        on_time_became_valid();
+        wifimgr::consumeStateChange();
+        return;
+    }
+
+    const bool wifi_changed = wifimgr::consumeStateChange();
+    if(!time_valid) {
+        if(wifi_changed) refresh_waiting_ui();
+        return;
+    }
+
     const DayTime now = appclock::now();
-    if(now.day != g_last_shown.day || now.minute != g_last_shown.minute) refresh_ui(now);
+    if(wifi_changed || now.day != g_last_shown.day || now.minute != g_last_shown.minute) refresh_ui(now);
 }
 
 }  // namespace app

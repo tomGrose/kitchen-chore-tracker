@@ -23,6 +23,8 @@ struct UiHeader {
     char time[12] = {};
     char date[32] = {};
     char summary[24] = {};
+    char wifi[24] = {};     // short connection status shown under the summary
+    bool time_valid = false;   // false: show a waiting state, not chore status
     char dev[64] = {};      // dev strip text, ignored when dev tools are off
     bool dev_anim = true;   // dev strip toggle states
     bool dev_save = true;

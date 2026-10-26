@@ -38,8 +38,7 @@ patches/          LovyanGFX RGB bus patch, applied at build time
 builds and runs on a host:
 
 ```sh
-g++ -std=c++17 -Wall -Wextra -I src -I /path/to/ArduinoJson \
-    tools/host_test/test_engine.cpp src/app/*.cpp -o host_test && ./host_test
+ARDUINOJSON_DIR=/path/to/arduinojson tools/host_test/run.sh
 ```
 
 ## Build

@@ -71,8 +71,20 @@ constexpr int DEV_START_MONTH = 10;
 constexpr int DEV_START_DAY = 22;              // Thursday
 constexpr uint32_t DEV_START_SECOND_OF_DAY = 12 * 3600;   // 12:00 noon
 
-// ---- Household settings from chores.md (used from Phase 3) ----
+// ---- Household settings from chores.md ----
+// These are DEFAULTS only. The live values are in settings.json on the SD card
+// (storage/settings_store); the web page edits them from Phase 4.
 constexpr const char *TIMEZONE_POSIX = "MST7MDT,M3.2.0,M11.1.0";   // America/Denver
+constexpr const char *NTP_SERVER = "pool.ntp.org";
+
+// ---- Wi-Fi ----
+constexpr const char *WIFI_HOSTNAME = "chores";
+// Association + DHCP routinely takes 8-12 s. Anything shorter tears down a
+// connection that was about to succeed and the device never links up.
+constexpr uint32_t WIFI_RETRY_MIN_MS = 15000;    // first reconnect attempt after a drop
+constexpr uint32_t WIFI_RETRY_MAX_MS = 60000;    // backoff ceiling
+// Any epoch below this means SNTP has not answered yet (the RTC starts at 1970).
+constexpr uint32_t TIME_VALID_EPOCH = 1735689600UL;   // 2025-01-01
 constexpr int QUIET_START_MINUTE = 22 * 60;    // 10:00 PM
 constexpr int QUIET_END_MINUTE = 7 * 60;       // 7:00 AM
 constexpr int NAG_INTERVAL_MINUTES = 30;
