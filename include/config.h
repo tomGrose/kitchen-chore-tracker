@@ -17,10 +17,16 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 // ---- Display (800x480 RGB panel) ----
 constexpr int SCREEN_W = 800;
 constexpr int SCREEN_H = 480;
-// Wiki says 15 MHz; Elecrow's V3.0 example uses 24 MHz. 24 MHz is stable here
-// with the bounce buffer. Dropping to 15 MHz does NOT let the panel run without
-// one, so there is nothing to gain from the lower clock (tested 2026-10-23).
-constexpr uint32_t LCD_PCLK_HZ = 24000000;
+// Elecrow's wiki value. The panel is fed from PSRAM continuously, and the clock
+// sets how much of that bandwidth it consumes: ~38 MB/s at 24 MHz against
+// ~24 MB/s at 15 MHz (928x525 of timing, 768 KB a frame). What is left over is
+// what LVGL has to render into, and at 24 MHz there was so little headroom that
+// any sustained redraw - a tile animation, or tapping quickly - starved the
+// panel's bounce-buffer refill ISR and left stale pixels down the left edge.
+// 15 MHz gives back ~37% of that headroom; the cost is 31 Hz refresh instead of
+// 49 Hz, which is invisible on a chore board. Do NOT raise this without
+// re-testing rapid taps and the nag blink together.
+constexpr uint32_t LCD_PCLK_HZ = 15000000;
 
 // ---- Backlight ----
 // Backlight is on IO2 (hardware-reference.md). Plain on/off for now;
@@ -89,5 +95,10 @@ constexpr int QUIET_START_MINUTE = 22 * 60;    // 10:00 PM
 constexpr int QUIET_END_MINUTE = 7 * 60;       // 7:00 AM
 constexpr int NAG_INTERVAL_MINUTES = 30;
 constexpr int IDLE_DIM_SECONDS = 60;
+// During quiet hours the backlight goes off once the screen has been idle this
+// long, and a touch wakes it. The panel has no PWM dimming yet (Phase 5), so
+// "minimal brightness" from the spec is off rather than dim. Set false in
+// settings.json to leave the clock visible all night.
+constexpr bool QUIET_SCREEN_OFF = true;
 
 }  // namespace cfg

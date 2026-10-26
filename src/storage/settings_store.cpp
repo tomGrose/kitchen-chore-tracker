@@ -30,8 +30,8 @@ Settings defaults()
     s.quietEndMinute = cfg::QUIET_END_MINUTE;
     s.nagIntervalMinutes = cfg::NAG_INTERVAL_MINUTES;
     s.idleDimSeconds = cfg::IDLE_DIM_SECONDS;
-    s.chimesEnabled = true;
-    s.devOffsetDays = 0;
+    s.quietScreenOff = cfg::QUIET_SCREEN_OFF;
+    s.devOffsetMinutes = 0;
     return s;
 }
 
@@ -68,8 +68,12 @@ bool load(Settings &out)
     out.quietEndMinute = doc["reminders"]["quietEnd"] | out.quietEndMinute;
     out.nagIntervalMinutes = doc["reminders"]["nagInterval"] | out.nagIntervalMinutes;
     out.idleDimSeconds = doc["reminders"]["idleDim"] | out.idleDimSeconds;
-    out.chimesEnabled = doc["reminders"]["chimes"] | out.chimesEnabled;
-    out.devOffsetDays = doc["dev"]["offsetDays"] | out.devOffsetDays;
+    out.quietScreenOff = doc["reminders"]["quietScreenOff"] | out.quietScreenOff;
+    out.devOffsetMinutes = doc["dev"]["offsetMinutes"] | out.devOffsetMinutes;
+    // Phase 3a files stored whole days; carry them over rather than losing the offset.
+    if(!doc["dev"]["offsetMinutes"].is<int>() && doc["dev"]["offsetDays"].is<int>()) {
+        out.devOffsetMinutes = doc["dev"]["offsetDays"].as<int>() * 1440;
+    }
 
     LOGI(TAG, "loaded settings: ssid \"%s\", tz %s, quiet %02d:%02d-%02d:%02d, nag %d min",
          out.wifiSsid.c_str(), out.timezonePosix.c_str(),
@@ -94,8 +98,8 @@ bool save(const Settings &settings)
     doc["reminders"]["quietEnd"] = settings.quietEndMinute;
     doc["reminders"]["nagInterval"] = settings.nagIntervalMinutes;
     doc["reminders"]["idleDim"] = settings.idleDimSeconds;
-    doc["reminders"]["chimes"] = settings.chimesEnabled;
-    doc["dev"]["offsetDays"] = settings.devOffsetDays;
+    doc["reminders"]["quietScreenOff"] = settings.quietScreenOff;
+    doc["dev"]["offsetMinutes"] = settings.devOffsetMinutes;
 
     std::string json;
     serializeJson(doc, json);

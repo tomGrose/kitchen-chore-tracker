@@ -8,7 +8,8 @@
  * answers: isValid() is false until then and callers must not compute chore
  * status, or everything would look wildly overdue.
  *
- * devOffsetDays shifts the date for testing. It is persisted in settings on
+ * devOffsetMinutes shifts the clock for testing, in minutes so quiet hours
+ * can be exercised without waiting until 10pm. It is persisted in settings on
  * the SD card, never NVS.
  *--------------------------------------------------------------*/
 #include <time.h>
@@ -20,7 +21,7 @@
 namespace appclock {
 
 // Starts SNTP. Safe to call before Wi-Fi is up; it syncs once a link exists.
-void init(const std::string &timezonePosix, const std::string &ntpServer, int offsetDays);
+void init(const std::string &timezonePosix, const std::string &ntpServer, int offsetMinutes);
 
 // False until SNTP has answered at least once. now() is meaningless until then.
 bool isValid();
@@ -31,7 +32,7 @@ dateutil::DayTime now();
 // Seconds since the epoch, 0 while invalid.
 time_t epoch();
 
-int  devOffsetDays();
-void setDevOffsetDays(int days);
+int  devOffsetMinutes();
+void setDevOffsetMinutes(int minutes);
 
 }  // namespace appclock

@@ -26,8 +26,6 @@ struct UiHeader {
     char wifi[24] = {};     // short connection status shown under the summary
     bool time_valid = false;   // false: show a waiting state, not chore status
     char dev[64] = {};      // dev strip text, ignored when dev tools are off
-    bool dev_anim = true;   // dev strip toggle states
-    bool dev_save = true;
 };
 
 struct UiDetails {
@@ -43,15 +41,18 @@ struct UiCallbacks {
     void (*on_tile_tap)(uint16_t id) = nullptr;
     void (*on_tile_long_press)(uint16_t id) = nullptr;
     void (*on_undo)(uint16_t id) = nullptr;
-    void (*on_dev_shift_days)(int delta) = nullptr;
+    void (*on_dev_shift_minutes)(int delta) = nullptr;
     void (*on_dev_reset)() = nullptr;
-    void (*on_dev_toggle)(int which) = nullptr;   // 0 = completion animation, 1 = saving to flash
 };
 
 void ui_main_create(const UiCallbacks &callbacks);
 
 // Safe to call from inside an LVGL event handler: the redraw is deferred.
 // `pulse_id` makes that tile do a short "completed" pop animation (0 = none).
-void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id);
+// `nag` makes every overdue/due tile flash its border instead - a deliberately
+// different motion from the completion pop, so one gesture never means both
+// "well done" and "you are late".
+void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id,
+                    bool nag = false);
 
 void ui_main_show_details(const UiDetails &details);

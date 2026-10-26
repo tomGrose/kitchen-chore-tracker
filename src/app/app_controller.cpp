@@ -8,10 +8,12 @@
 #include <vector>
 
 #include "app/chore_engine.h"
+#include "app/nag_engine.h"
 #include "app/chore_schedule.h"
 #include "app/seed_chores.h"
 #include "app_log.h"
 #include "config.h"
+#include "display/backlight.h"
 #include "display/display.h"
 #include "net/wifi_manager.h"
 #include "storage/chore_store.h"
@@ -30,17 +32,30 @@ namespace {
 constexpr const char *TAG = "app";
 
 ChoreEngine g_engine;
+NagEngine g_nag;
 Settings g_settings;
 bool g_storage_ok = false;
 DayTime g_last_shown = {-1, -1};
 bool g_time_ready = false;   // set on the first valid clock reading after boot
 uint16_t g_pulse_id = 0;
+bool g_nag_flash = false;   // flash the attention tiles on the next refresh
 uint32_t g_last_tick = 0;
-bool g_dev_anim = true;   // dev toggles for isolating screen glitches (Phase 2 testing)
-bool g_dev_save = true;
 
 const char *const kWeekdayLong[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const char *const kMonthShort[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+// "live", "+2h", "-1d3h"
+void format_offset(char *out, size_t size, int minutes)
+{
+    if(minutes == 0) { snprintf(out, size, "live"); return; }
+    const char sign = minutes < 0 ? '-' : '+';
+    const int m = minutes < 0 ? -minutes : minutes;
+    const int days = m / 1440;
+    const int hours = (m % 1440) / 60;
+    if(days && hours) snprintf(out, size, "%c%dd%dh", sign, days, hours);
+    else if(days)     snprintf(out, size, "%c%dd", sign, days);
+    else              snprintf(out, size, "%c%dh", sign, hours);
+}
 
 // "2:05 PM"
 void format_time(char *out, size_t size, int minute)
@@ -164,10 +179,6 @@ void flush_save_now()
 void persist()
 {
     if(!g_storage_ok) return;
-    if(!g_dev_save) {
-        LOGI(TAG, "save skipped (dev toggle is OFF)");
-        return;
-    }
     g_save_pending = true;
 }
 
@@ -189,12 +200,10 @@ void refresh_waiting_ui()
     snprintf(header.summary, sizeof(header.summary), " ");
     snprintf(header.wifi, sizeof(header.wifi), "%s", wifimgr::statusText());
 
-    char dev_note[16];
-    snprintf(dev_note, sizeof(dev_note), "(%+dd)", appclock::devOffsetDays());
-    snprintf(header.dev, sizeof(header.dev), "%s - %s", dev_note, fsbackend::name());
+    char offset[16];
+    format_offset(offset, sizeof(offset), appclock::devOffsetMinutes());
+    snprintf(header.dev, sizeof(header.dev), "%s - %s", offset, fsbackend::name());
     header.time_valid = false;
-    header.dev_anim = g_dev_anim;
-    header.dev_save = g_dev_save;
 
     ui_main_update(header, {}, 0);
 }
@@ -212,12 +221,13 @@ void refresh_ui(const DayTime &now)
     else snprintf(header.summary, sizeof(header.summary), "%d left today", remaining);
 
     char dev_day[16];
+    char offset[16];
     format_month_day(dev_day, sizeof(dev_day), now.day);
+    format_offset(offset, sizeof(offset), appclock::devOffsetMinutes());
     // Backend shown here because a missing SD card degrades silently to flash.
-    snprintf(header.dev, sizeof(header.dev), "%s (%+dd) - %s", dev_day, appclock::devOffsetDays(),
-             fsbackend::name());
-    header.dev_anim = g_dev_anim;
-    header.dev_save = g_dev_save;
+    // Quiet state too, since during quiet hours the screen is normally dark.
+    snprintf(header.dev, sizeof(header.dev), "%s %s - %s%s", dev_day, offset, fsbackend::name(),
+             isQuietMinute(now.minute, g_settings.quietStartMinute, g_settings.quietEndMinute) ? " - quiet" : "");
 
     std::vector<UiTile> tiles;
     for(const ChoreView &v : g_engine.buildView(now)) {
@@ -232,9 +242,33 @@ void refresh_ui(const DayTime &now)
         tiles.push_back(t);
     }
 
-    ui_main_update(header, tiles, g_pulse_id);
+    ui_main_update(header, tiles, g_pulse_id, g_nag_flash);
     g_pulse_id = 0;
+    g_nag_flash = false;
     g_last_shown = now;
+}
+
+void apply_nag_config()
+{
+    NagConfig c;
+    c.quietStartMinute = g_settings.quietStartMinute;
+    c.quietEndMinute = g_settings.quietEndMinute;
+    c.nagIntervalMinutes = g_settings.nagIntervalMinutes;
+    g_nag.setConfig(c);
+}
+
+// The panel has no PWM dimming yet, so "minimal brightness" during quiet hours
+// is off-once-idle, with a touch waking it (display.cpp swallows that touch so
+// waking never presses a button). Outside quiet hours the screen stays lit;
+// idle dimming during the day is a Phase 5 item.
+void update_backlight(const NagDecision &decision)
+{
+    bool want_on = true;
+    if(decision.quiet && g_settings.quietScreenOff) {
+        const uint32_t idle_ms = lv_display_get_inactive_time(nullptr);
+        want_on = idle_ms < static_cast<uint32_t>(g_settings.idleDimSeconds) * 1000;
+    }
+    if(want_on != backlight_is_on()) backlight_set(want_on);
 }
 
 // ---- UI callbacks ----
@@ -246,7 +280,7 @@ void on_tile_tap(uint16_t id)
     const Chore *c = g_engine.find(id);
     if(g_engine.complete(id, now, cfg::DEFAULT_USER)) {
         LOGI(TAG, "completed \"%s\" (streak %u)", c ? c->name.c_str() : "?", c ? static_cast<unsigned>(c->currentStreak) : 0U);
-        g_pulse_id = g_dev_anim ? id : 0;
+        g_pulse_id = id;
         persist();
     }
     else {
@@ -307,10 +341,12 @@ void persist_settings()
     }
 }
 
-void on_dev_shift_days(int delta)
+void on_dev_shift_minutes(int delta)
 {
-    g_settings.devOffsetDays += delta;
-    appclock::setDevOffsetDays(g_settings.devOffsetDays);
+    g_settings.devOffsetMinutes += delta;
+    appclock::setDevOffsetMinutes(g_settings.devOffsetMinutes);
+    // A jump in time must not look like a nag interval quietly elapsing.
+    g_nag.reset();
     persist_settings();
     if(!appclock::isValid()) {
         refresh_waiting_ui();
@@ -321,21 +357,13 @@ void on_dev_shift_days(int delta)
     refresh_ui(now);
 }
 
-void on_dev_toggle(int which)
-{
-    if(which == 0) g_dev_anim = !g_dev_anim;
-    else g_dev_save = !g_dev_save;
-    LOGI(TAG, "dev toggles: animation %s, saving %s", g_dev_anim ? "ON" : "OFF", g_dev_save ? "ON" : "OFF");
-    if(appclock::isValid()) refresh_ui(appclock::now());
-    else refresh_waiting_ui();
-}
-
 void on_dev_reset()
 {
     LOGW(TAG, "dev reset: wiping stored chores and the test-clock offset");
     chore_store::wipe();
-    g_settings.devOffsetDays = 0;
-    appclock::setDevOffsetDays(0);
+    g_settings.devOffsetMinutes = 0;
+    appclock::setDevOffsetMinutes(0);
+    g_nag.reset();
     persist_settings();
     if(!appclock::isValid()) {
         // Reseeding needs today's date; the clock will do it when it syncs.
@@ -364,7 +392,8 @@ void init()
     }
 
     wifimgr::begin(g_settings.wifiSsid, g_settings.wifiPassword);
-    appclock::init(g_settings.timezonePosix, g_settings.ntpServer, g_settings.devOffsetDays);
+    appclock::init(g_settings.timezonePosix, g_settings.ntpServer, g_settings.devOffsetMinutes);
+    apply_nag_config();
     g_engine.setEarlyWindowDays(cfg::EARLY_WINDOW_DAYS);
 
     ChoreData loaded;
@@ -385,9 +414,8 @@ void init()
     callbacks.on_tile_tap = on_tile_tap;
     callbacks.on_tile_long_press = on_tile_long_press;
     callbacks.on_undo = on_undo;
-    callbacks.on_dev_shift_days = on_dev_shift_days;
+    callbacks.on_dev_shift_minutes = on_dev_shift_minutes;
     callbacks.on_dev_reset = on_dev_reset;
-    callbacks.on_dev_toggle = on_dev_toggle;
     ui_main_create(callbacks);
     refresh_waiting_ui();
 }
@@ -432,7 +460,25 @@ void tick()
     }
 
     const DayTime now = appclock::now();
-    if(wifi_changed || now.day != g_last_shown.day || now.minute != g_last_shown.minute) refresh_ui(now);
+    const NagDecision decision = g_nag.evaluate(g_engine.buildView(now), now);
+
+    // Nothing outstanding: forget the timer so the next chore that falls due
+    // is flagged at once instead of waiting out the rest of the interval.
+    if(decision.attentionCount == 0) g_nag.reset();
+
+    bool redraw = wifi_changed || now.day != g_last_shown.day || now.minute != g_last_shown.minute;
+    if(decision.shouldNag) {
+        const Chore *lead = g_engine.find(decision.leadChoreId);
+        LOGI(TAG, "nag: %d chore(s) need attention, starting with \"%s\"",
+             decision.attentionCount, lead ? lead->name.c_str() : "?");
+        backlight_set(true);
+        g_nag_flash = true;
+        g_nag.markNagged(now);
+        redraw = true;
+    }
+
+    update_backlight(decision);
+    if(redraw) refresh_ui(now);
 }
 
 }  // namespace app

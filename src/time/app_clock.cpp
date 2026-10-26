@@ -9,16 +9,16 @@ namespace {
 
 constexpr const char *TAG = "clock";
 
-int s_offset_days = 0;
+int s_offset_minutes = 0;
 bool s_was_valid = false;
 
 }  // namespace
 
 namespace appclock {
 
-void init(const std::string &timezonePosix, const std::string &ntpServer, int offsetDays)
+void init(const std::string &timezonePosix, const std::string &ntpServer, int offsetMinutes)
 {
-    s_offset_days = offsetDays;
+    s_offset_minutes = offsetMinutes;
 
     // configTzTime applies the POSIX TZ rules and starts SNTP. The ESP-IDF
     // re-syncs on its own interval afterwards, so there is nothing to poll.
@@ -43,12 +43,14 @@ bool isValid()
 
 dateutil::DayTime now()
 {
-    const time_t t = time(nullptr);
+    // Apply the test offset to the epoch, not to the day number, so day
+    // rollover and DST transitions stay the C library's job.
+    const time_t t = time(nullptr) + static_cast<time_t>(s_offset_minutes) * 60;
     struct tm local {};
     localtime_r(&t, &local);
 
     dateutil::DayTime d;
-    d.day = dateutil::daysFromCivil(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday) + s_offset_days;
+    d.day = dateutil::daysFromCivil(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday);
     d.minute = static_cast<int16_t>(local.tm_hour * 60 + local.tm_min);
     return d;
 }
@@ -59,14 +61,14 @@ time_t epoch()
     return t > static_cast<time_t>(cfg::TIME_VALID_EPOCH) ? t : 0;
 }
 
-int devOffsetDays()
+int devOffsetMinutes()
 {
-    return s_offset_days;
+    return s_offset_minutes;
 }
 
-void setDevOffsetDays(int days)
+void setDevOffsetMinutes(int minutes)
 {
-    s_offset_days = days;
+    s_offset_minutes = minutes;
 }
 
 }  // namespace appclock

@@ -1,7 +1,9 @@
 // Host-side tests for the chore engine (runs on a PC, not on the board).
 //
-//   g++ -std=c++17 -Wall -Wextra -I src -I <dir containing ArduinoJson.h>
-//       tools/host_test/test_engine.cpp src/app/*.cpp -o host_test && ./host_test
+//   ARDUINOJSON_DIR=<dir containing ArduinoJson.h> tools/host_test/run.sh
+//
+// app_controller.cpp is excluded there: it is the only file under src/app that
+// needs Arduino and LVGL.
 //
 // The engine has no Arduino dependencies, so this compiles with plain g++.
 #include <cstdio>
@@ -11,6 +13,7 @@
 #include "app/chore_engine.h"
 #include "app/chore_json.h"
 #include "app/chore_schedule.h"
+#include "app/nag_engine.h"
 #include "app/seed_chores.h"
 
 using dateutil::DayTime;
@@ -326,6 +329,83 @@ static void test_json()
     std::printf("sample JSON size: %zu bytes for %zu chores\n", json.size(), e.data().chores.size());
 }
 
+static void test_quiet_hours()
+{
+    // 22:00-07:00, the default: the span wraps midnight.
+    CHECK(isQuietMinute(22 * 60, 22 * 60, 7 * 60));          // start is inclusive
+    CHECK(isQuietMinute(23 * 60 + 59, 22 * 60, 7 * 60));
+    CHECK(isQuietMinute(0, 22 * 60, 7 * 60));                 // midnight
+    CHECK(isQuietMinute(6 * 60 + 59, 22 * 60, 7 * 60));
+    CHECK(!isQuietMinute(7 * 60, 22 * 60, 7 * 60));           // end is exclusive
+    CHECK(!isQuietMinute(12 * 60, 22 * 60, 7 * 60));
+    CHECK(!isQuietMinute(21 * 60 + 59, 22 * 60, 7 * 60));
+
+    // A span that does not wrap.
+    CHECK(isQuietMinute(2 * 60, 1 * 60, 6 * 60));
+    CHECK(!isQuietMinute(0, 1 * 60, 6 * 60));
+    CHECK(!isQuietMinute(6 * 60, 1 * 60, 6 * 60));
+    CHECK(!isQuietMinute(23 * 60, 1 * 60, 6 * 60));
+
+    // Zero-length span means quiet hours are off, not always-on.
+    CHECK(!isQuietMinute(0, 0, 0));
+    CHECK(!isQuietMinute(12 * 60, 9 * 60, 9 * 60));
+}
+
+static void test_nagging()
+{
+    const int32_t thu = D(2026, 10, 22);
+    ChoreEngine e;
+    e.data() = seedChoreData(thu);
+
+    NagConfig cfg;
+    cfg.quietStartMinute = 22 * 60;
+    cfg.quietEndMinute = 7 * 60;
+    cfg.nagIntervalMinutes = 30;
+
+    NagEngine nag;
+    nag.setConfig(cfg);
+
+    // Thursday noon: Vacuum (Thu) and Clean bathroom are due.
+    DayTime now = at(thu, 12 * 60);
+    NagDecision d = nag.evaluate(e.buildView(now), now);
+    CHECK(d.attentionCount == 2);
+    CHECK(!d.quiet);
+    CHECK(d.shouldNag);                       // nothing nagged yet
+    CHECK(d.leadChoreId != 0);
+
+    // Having nagged, it stays quiet until the interval elapses.
+    nag.markNagged(now);
+    d = nag.evaluate(e.buildView(at(thu, 12 * 60 + 29)), at(thu, 12 * 60 + 29));
+    CHECK(!d.shouldNag);
+    d = nag.evaluate(e.buildView(at(thu, 12 * 60 + 30)), at(thu, 12 * 60 + 30));
+    CHECK(d.shouldNag);                       // exactly on the interval
+
+    // Inside quiet hours it never nags, however long it has been.
+    now = at(thu, 23 * 60);
+    d = nag.evaluate(e.buildView(now), now);
+    CHECK(d.quiet);
+    CHECK(d.attentionCount == 2);             // still outstanding, just not announced
+    CHECK(!d.shouldNag);
+
+    // Completing everything due leaves nothing to nag about.
+    e.complete(VAC_THU, at(thu, 13 * 60), "Tom");
+    e.complete(BATH, at(thu, 13 * 60), "Tom");
+    now = at(thu, 14 * 60);
+    d = nag.evaluate(e.buildView(now), now);
+    CHECK(d.attentionCount == 0);
+    CHECK(!d.shouldNag);
+    CHECK(d.leadChoreId == 0);
+
+    // A fresh engine nags immediately once something is overdue, even at 00:01
+    // of the next interval, because reset() clears the timer.
+    nag.reset();
+    const int32_t fri = D(2026, 10, 23);
+    now = at(fri, 12 * 60);
+    d = nag.evaluate(e.buildView(now), now);
+    CHECK(d.attentionCount > 0);
+    CHECK(d.shouldNag);
+}
+
 int main()
 {
     test_dates();
@@ -336,6 +416,8 @@ int main()
     test_due_time_and_daily();
     test_history_prune();
     test_json();
+    test_quiet_hours();
+    test_nagging();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

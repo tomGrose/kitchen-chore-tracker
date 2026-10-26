@@ -46,8 +46,6 @@ lv_obj_t *s_summary = nullptr;
 lv_obj_t *s_wifi = nullptr;
 lv_obj_t *s_grid = nullptr;
 lv_obj_t *s_dev_label = nullptr;
-lv_obj_t *s_dev_anim_label = nullptr;
-lv_obj_t *s_dev_save_label = nullptr;
 lv_obj_t *s_overlay = nullptr;
 
 UiHeader s_header;
@@ -56,6 +54,42 @@ std::vector<UiTile> s_shown;        // what is currently on screen
 bool s_have_shown = false;
 bool s_update_pending = false;
 uint16_t s_pulse_id = 0;
+bool s_nag = false;             // blink the attention tiles on the next rebuild
+
+// A nag blinks discretely rather than animating: a smooth animation repaints
+// every attention tile ~30 times a second, and eight tiles of that saturates
+// PSRAM bandwidth and starves the panel (stale pixels down the left edge).
+// Six opaque repaints cost almost nothing and read as more urgent anyway.
+struct NagTile { lv_obj_t *obj; lv_color_t base; lv_color_t bright; };
+std::vector<NagTile> s_nag_tiles;
+lv_timer_t *s_nag_timer = nullptr;
+int s_nag_steps_left = 0;
+bool s_nag_lit = false;
+
+void stop_nag_blink()
+{
+    if(s_nag_timer != nullptr) {
+        lv_timer_delete(s_nag_timer);
+        s_nag_timer = nullptr;
+    }
+    s_nag_tiles.clear();
+    s_nag_steps_left = 0;
+    s_nag_lit = false;
+}
+
+void nag_blink_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    s_nag_lit = !s_nag_lit;
+    for(const NagTile &t : s_nag_tiles) {
+        lv_obj_set_style_bg_color(t.obj, s_nag_lit ? t.bright : t.base, 0);
+    }
+    if(--s_nag_steps_left <= 0) {
+        // Always land back on the base colour.
+        for(const NagTile &t : s_nag_tiles) lv_obj_set_style_bg_color(t.obj, t.base, 0);
+        stop_nag_blink();
+    }
+}
 uint16_t s_details_id = 0;
 
 bool tiles_equal(const std::vector<UiTile> &a, const std::vector<UiTile> &b)
@@ -94,7 +128,7 @@ void scale_anim_cb(void *obj, int32_t value)
     lv_obj_set_style_transform_scale(static_cast<lv_obj_t *>(obj), value, 0);
 }
 
-void create_tile(const UiTile &t, bool pulse)
+void create_tile(const UiTile &t, bool pulse, bool nag)
 {
     const TileColors colors = colors_for(t.state);
 
@@ -142,6 +176,7 @@ void create_tile(const UiTile &t, bool pulse)
     }
 
     if(pulse) {
+        // Completion: a quick pop outwards. Means "done".
         lv_anim_t anim;
         lv_anim_init(&anim);
         lv_anim_set_var(&anim, tile);
@@ -152,19 +187,40 @@ void create_tile(const UiTile &t, bool pulse)
         lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
         lv_anim_start(&anim);
     }
+    else if(nag) {
+        // Collected here, blinked by nag_blink_cb once the grid is built.
+        NagTile entry;
+        entry.obj = tile;
+        entry.base = lv_color_hex(colors.bg);
+        entry.bright = lv_color_mix(lv_color_hex(0xFFFFFF), entry.base, 140);
+        s_nag_tiles.push_back(entry);
+    }
 }
 
 void rebuild_tiles()
 {
+    // lv_obj_clean deletes the tiles the blink timer holds pointers to.
+    stop_nag_blink();
+
     const int32_t scroll_y = lv_obj_get_scroll_y(s_grid);
     lv_obj_clean(s_grid);
-    for(const UiTile &t : s_tiles) create_tile(t, t.id == s_pulse_id);
+    for(const UiTile &t : s_tiles) {
+        const bool attention = t.state == UiTileState::Overdue || t.state == UiTileState::Due;
+        create_tile(t, t.id == s_pulse_id, s_nag && attention);
+    }
     lv_obj_update_layout(s_grid);
     lv_obj_scroll_to_y(s_grid, scroll_y, LV_ANIM_OFF);
+
+    if(!s_nag_tiles.empty()) {
+        s_nag_steps_left = 6;          // three on/off cycles
+        s_nag_lit = false;
+        s_nag_timer = lv_timer_create(nag_blink_cb, 260, nullptr);
+    }
 
     s_shown = s_tiles;
     s_have_shown = true;
     s_pulse_id = 0;
+    s_nag = false;
 }
 
 // Runs from lv_timer_handler(), never from inside an event callback, so it can
@@ -179,11 +235,9 @@ void apply_update_cb(void *)
     set_label_if_changed(s_wifi, s_header.wifi);
     if(cfg::DEV_TOOLS) {
         set_label_if_changed(s_dev_label, s_header.dev);
-        set_label_if_changed(s_dev_anim_label, s_header.dev_anim ? "Anim ON" : "Anim OFF");
-        set_label_if_changed(s_dev_save_label, s_header.dev_save ? "Save ON" : "Save OFF");
     }
 
-    if(!s_have_shown || s_pulse_id != 0 || !tiles_equal(s_tiles, s_shown)) rebuild_tiles();
+    if(!s_have_shown || s_pulse_id != 0 || s_nag || !tiles_equal(s_tiles, s_shown)) rebuild_tiles();
 }
 
 // ---- details dialog ----
@@ -232,34 +286,13 @@ lv_obj_t *make_button(lv_obj_t *parent, const char *text, int width, int height,
 void on_dev_shift(lv_event_t *e)
 {
     const int delta = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
-    if(s_cb.on_dev_shift_days != nullptr) s_cb.on_dev_shift_days(delta);
+    if(s_cb.on_dev_shift_minutes != nullptr) s_cb.on_dev_shift_minutes(delta);
 }
 
 void on_dev_reset_click(lv_event_t *e)
 {
     (void)e;
     if(s_cb.on_dev_reset != nullptr) s_cb.on_dev_reset();
-}
-
-void on_dev_toggle_click(lv_event_t *e)
-{
-    const int which = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
-    if(s_cb.on_dev_toggle != nullptr) s_cb.on_dev_toggle(which);
-}
-
-lv_obj_t *make_dev_toggle(lv_obj_t *strip, int x, int which)
-{
-    lv_obj_t *button = lv_button_create(strip);
-    lv_obj_set_size(button, 130, DEV_H - 8);
-    lv_obj_set_pos(button, x, 0);
-    lv_obj_set_style_bg_color(button, lv_color_hex(0x37474F), 0);
-    lv_obj_add_event_cb(button, on_dev_toggle_click, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(which)));
-
-    lv_obj_t *label = lv_label_create(button);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
-    lv_label_set_text(label, "");
-    lv_obj_center(label);
-    return label;
 }
 
 void create_dev_strip(lv_obj_t *screen)
@@ -275,9 +308,11 @@ void create_dev_strip(lv_obj_t *screen)
 
     struct DevButton { const char *text; int x; int width; int delta; bool reset; };
     const DevButton buttons[] = {
-        {"-1 day", 0, 110, -1, false},
-        {"+1 day", 118, 110, +1, false},
-        {"Reset", 236, 110, 0, true},
+        {"-1 hr",  0,   100,   -60, false},
+        {"+1 hr",  108, 100,   +60, false},
+        {"-1 day", 216, 100, -1440, false},
+        {"+1 day", 324, 100, +1440, false},
+        {"Reset",  432, 100,     0, true},
     };
     for(const DevButton &b : buttons) {
         lv_obj_t *button = lv_button_create(strip);
@@ -292,9 +327,6 @@ void create_dev_strip(lv_obj_t *screen)
         lv_label_set_text(label, b.text);
         lv_obj_center(label);
     }
-
-    s_dev_anim_label = make_dev_toggle(strip, 354, 0);
-    s_dev_save_label = make_dev_toggle(strip, 492, 1);
 
     s_dev_label = lv_label_create(strip);
     lv_obj_set_style_text_font(s_dev_label, &lv_font_montserrat_20, 0);
@@ -354,11 +386,12 @@ void ui_main_create(const UiCallbacks &callbacks)
     if(cfg::DEV_TOOLS) create_dev_strip(screen);
 }
 
-void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id)
+void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id, bool nag)
 {
     s_header = header;
     s_tiles = tiles;
     if(pulse_id != 0) s_pulse_id = pulse_id;
+    if(nag) s_nag = true;
 
     if(!s_update_pending) {
         s_update_pending = true;

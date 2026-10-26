@@ -27,12 +27,12 @@ struct Settings {
     int quietEndMinute = 0;
     int nagIntervalMinutes = 0;
     int idleDimSeconds = 0;
-    bool chimesEnabled = true;
+    bool quietScreenOff = true;   // backlight off during quiet hours once idle
 
     // ---- Dev ----
-    // Test-clock day offset. Lives here rather than NVS so the dev buttons do
-    // not write internal flash. Always 0 in a release build.
-    int devOffsetDays = 0;
+    // Test-clock offset in minutes. Lives here rather than NVS so the dev
+    // buttons do not write internal flash. Always 0 in a release build.
+    int devOffsetMinutes = 0;
 };
 
 namespace settings_store {

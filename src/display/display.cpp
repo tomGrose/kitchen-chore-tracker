@@ -105,7 +105,7 @@ bool display_init()
     lv_display_set_flush_cb(display, display_flush);
     lv_display_set_buffers(display, frame_buffer_0, frame_buffer_1,
                            cfg::SCREEN_W * cfg::SCREEN_H * sizeof(lv_color_t),
-                           LV_DISPLAY_RENDER_MODE_FULL);
+                           LV_DISPLAY_RENDER_MODE_DIRECT);
 
     lv_indev_t *touchpad = lv_indev_create();
     lv_indev_set_type(touchpad, LV_INDEV_TYPE_POINTER);
