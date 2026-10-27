@@ -30,6 +30,9 @@ enum class Status : uint8_t { Overdue = 0, Due = 1, Upcoming = 2, Done = 3 };
 
 struct ChoreState {
     Status  status = Status::Upcoming;
+    bool    snoozed = false;                // nagging held off, status unchanged
+    int32_t snoozeUntilDay = dateutil::NO_DAY;
+    int16_t snoozeUntilMinute = 0;
     int32_t pendingDay = dateutil::NO_DAY;  // earliest unsatisfied occurrence (Due/Overdue)
     int32_t daysOverdue = 0;                // today - pendingDay for carried-over chores
     int32_t nextDay = dateutil::NO_DAY;     // next occurrence (Upcoming/Done)
@@ -38,6 +41,9 @@ struct ChoreState {
 struct ChoreView {
     uint16_t id = 0;
     Status   status = Status::Upcoming;
+    bool     snoozed = false;
+    int32_t  snoozeUntilDay = dateutil::NO_DAY;
+    int16_t  snoozeUntilMinute = 0;
     int32_t  daysOverdue = 0;
     int32_t  nextDay = dateutil::NO_DAY;
     uint16_t streak = 0;                    // 0 while a missed occurrence is carried over
@@ -63,6 +69,11 @@ public:
     // Mark a chore done. Returns false if it does not exist, is disabled, or is
     // already DONE.
     bool complete(uint16_t id, const dateutil::DayTime &now, const std::string &by);
+
+    // Hold nagging off until `until`. Completing the chore clears it, as does
+    // the moment passing.
+    bool snooze(uint16_t id, const dateutil::DayTime &until);
+    bool clearSnooze(uint16_t id);
 
     bool canUndo(uint16_t id) const;
     bool undoLast(uint16_t id);

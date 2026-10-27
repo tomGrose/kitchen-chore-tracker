@@ -43,4 +43,25 @@ int daysInMonth(int year, unsigned month)
     return kDays[month - 1];
 }
 
+DayTime addMinutes(const DayTime &t, int minutes)
+{
+    // Work in absolute minutes so negative deltas borrow days correctly;
+    // C++ integer division truncates toward zero, hence the explicit floor.
+    const int64_t total = static_cast<int64_t>(t.day) * 1440 + t.minute + minutes;
+    int64_t days = total / 1440;
+    int64_t rem = total % 1440;
+    if(rem < 0) { rem += 1440; --days; }
+
+    DayTime out;
+    out.day = static_cast<int32_t>(days);
+    out.minute = static_cast<int16_t>(rem);
+    return out;
+}
+
+bool isBefore(const DayTime &a, const DayTime &b)
+{
+    if(a.day != b.day) return a.day < b.day;
+    return a.minute < b.minute;
+}
+
 }  // namespace dateutil

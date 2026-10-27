@@ -21,4 +21,8 @@ void    civilFromDays(int32_t days, int &year, unsigned &month, unsigned &day);
 int     weekday(int32_t days);                  // 0 = Sunday ... 6 = Saturday
 int     daysInMonth(int year, unsigned month);  // month is 1..12
 
+// Minute arithmetic that carries across midnight in both directions.
+DayTime addMinutes(const DayTime &t, int minutes);
+bool    isBefore(const DayTime &a, const DayTime &b);
+
 }  // namespace dateutil

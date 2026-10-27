@@ -42,6 +42,10 @@ struct Chore {
     uint16_t    currentStreak = 0;
     uint16_t    bestStreak = 0;
     bool        enabled = true;
+    // Nagging is suppressed until this moment. NO_DAY = not snoozed. The chore
+    // keeps its real status while snoozed; only the nagging is held off.
+    int32_t     snoozeUntilDay = dateutil::NO_DAY;
+    int16_t     snoozeUntilMinute = 0;
 };
 
 // One completion, plus the chore's state before it so it can be undone.
@@ -55,6 +59,8 @@ struct HistoryEntry {
     int32_t     prevCoversDay = dateutil::NO_DAY;
     uint16_t    prevStreak = 0;
     uint16_t    prevBest = 0;
+    int32_t     prevSnoozeUntilDay = dateutil::NO_DAY;
+    int16_t     prevSnoozeUntilMinute = 0;
 };
 
 struct ChoreData {

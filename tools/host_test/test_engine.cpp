@@ -321,7 +321,9 @@ static void test_json()
     ChoreData untouched;
     untouched.nextId = 77;
     CHECK(!chorejson::parse("not json", 8, untouched));
-    CHECK(!chorejson::parse("{\"v\":2,\"chores\":[]}", 19, untouched));
+    // v3 stands for "a version this build does not know". v2 used to serve that
+    // role and is now the current schema, so the check moved up.
+    CHECK(!chorejson::parse("{\"v\":3,\"chores\":[]}", 19, untouched));
     CHECK(!chorejson::parse("{\"v\":1}", 7, untouched));
     CHECK(!chorejson::parse("{\"v\":1,\"chores\":[{\"id\":1,\"sched\":{\"t\":\"bogus\"}}]}", 49, untouched));
     CHECK(untouched.nextId == 77);
@@ -406,6 +408,107 @@ static void test_nagging()
     CHECK(d.shouldNag);
 }
 
+static void test_minute_math()
+{
+    const int32_t d = D(2026, 10, 26);
+
+    DayTime t = dateutil::addMinutes(at(d, 23 * 60 + 50), 15);
+    CHECK(t.day == d + 1);
+    CHECK(t.minute == 5);                       // carried past midnight
+
+    t = dateutil::addMinutes(at(d, 10), -20);
+    CHECK(t.day == d - 1);
+    CHECK(t.minute == 1430);                    // borrowed back across midnight
+
+    t = dateutil::addMinutes(at(d, 12 * 60), 60);
+    CHECK(t.day == d);
+    CHECK(t.minute == 13 * 60);
+
+    CHECK(dateutil::isBefore(at(d, 10), at(d, 11)));
+    CHECK(dateutil::isBefore(at(d, 1439), at(d + 1, 0)));
+    CHECK(!dateutil::isBefore(at(d, 10), at(d, 10)));   // equal is not before
+    CHECK(!dateutil::isBefore(at(d + 1, 0), at(d, 1439)));
+}
+
+static void test_snooze()
+{
+    const int32_t thu = D(2026, 10, 22);
+    ChoreEngine e;
+    e.data() = seedChoreData(thu);
+
+    NagConfig cfg;
+    cfg.quietStartMinute = 22 * 60;
+    cfg.quietEndMinute = 7 * 60;
+    cfg.nagIntervalMinutes = 30;
+    NagEngine nag;
+    nag.setConfig(cfg);
+
+    DayTime now = at(thu, 12 * 60);
+    CHECK(nag.evaluate(e.buildView(now), now).attentionCount == 2);
+
+    // Snoozing holds the nag off without changing the status.
+    CHECK(e.snooze(VAC_THU, dateutil::addMinutes(now, 15)));
+    CHECK(statusOf(e, VAC_THU, now) == Status::Due);          // still due
+    NagDecision d = nag.evaluate(e.buildView(now), now);
+    CHECK(d.attentionCount == 1);                              // but not nagged
+    CHECK(d.leadChoreId == BATH);
+
+    // It expires on its own; nothing has to sweep it.
+    now = at(thu, 12 * 60 + 14);
+    CHECK(nag.evaluate(e.buildView(now), now).attentionCount == 1);
+    now = at(thu, 12 * 60 + 15);
+    CHECK(nag.evaluate(e.buildView(now), now).attentionCount == 2);
+
+    // "Until tomorrow" covers the rest of today.
+    DayTime tomorrow = at(thu + 1, 0);
+    CHECK(e.snooze(VAC_THU, tomorrow));
+    CHECK(nag.evaluate(e.buildView(at(thu, 23 * 60)), at(thu, 23 * 60)).attentionCount == 1);
+    CHECK(nag.evaluate(e.buildView(at(thu + 1, 8 * 60)), at(thu + 1, 8 * 60)).attentionCount >= 1);
+
+    // Cancelling brings it straight back.
+    CHECK(e.snooze(BATH, dateutil::addMinutes(at(thu, 12 * 60), 60)));
+    now = at(thu, 12 * 60 + 5);
+    CHECK(e.evaluate(*e.find(BATH), now).snoozed);
+    CHECK(e.clearSnooze(BATH));
+    CHECK(!e.evaluate(*e.find(BATH), now).snoozed);
+
+    // Completing a snoozed chore clears the snooze; undo puts it back.
+    CHECK(e.snooze(BATH, dateutil::addMinutes(now, 60)));
+    CHECK(e.complete(BATH, now, "Tom"));
+    CHECK(e.find(BATH)->snoozeUntilDay == NO_DAY);
+    CHECK(e.undoLast(BATH));
+    CHECK(e.find(BATH)->snoozeUntilDay != NO_DAY);
+    CHECK(e.evaluate(*e.find(BATH), now).snoozed);
+}
+
+static void test_snooze_json()
+{
+    const int32_t thu = D(2026, 10, 22);
+    ChoreEngine e;
+    e.data() = seedChoreData(thu);
+    const DayTime now = at(thu, 12 * 60);
+    CHECK(e.snooze(VAC_THU, dateutil::addMinutes(now, 45)));
+
+    const std::string json = chorejson::serialize(e.data());
+    ChoreData back;
+    CHECK(chorejson::parse(json.c_str(), json.size(), back));
+
+    const Chore *c = nullptr;
+    for(const Chore &x : back.chores) if(x.id == VAC_THU) c = &x;
+    CHECK(c != nullptr);
+    CHECK(c != nullptr && c->snoozeUntilDay == dateutil::addMinutes(now, 45).day);
+    CHECK(c != nullptr && c->snoozeUntilMinute == dateutil::addMinutes(now, 45).minute);
+
+    // A v1 file still loads; it simply has no snooze.
+    ChoreData old;
+    const char *v1 = "{\"v\":1,\"nextId\":2,\"chores\":[{\"id\":1,\"name\":\"Mop\","
+                     "\"sched\":{\"t\":\"daily\"},\"due\":-1,\"start\":0,\"cs\":3,\"bs\":4,\"en\":true}]}";
+    CHECK(chorejson::parse(v1, strlen(v1), old));
+    CHECK(old.chores.size() == 1);
+    CHECK(old.chores.size() == 1 && old.chores[0].snoozeUntilDay == NO_DAY);
+    CHECK(old.chores.size() == 1 && old.chores[0].currentStreak == 3);
+}
+
 int main()
 {
     test_dates();
@@ -418,6 +521,9 @@ int main()
     test_json();
     test_quiet_hours();
     test_nagging();
+    test_minute_math();
+    test_snooze();
+    test_snooze_json();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

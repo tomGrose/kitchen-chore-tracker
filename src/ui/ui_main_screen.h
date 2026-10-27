@@ -34,13 +34,17 @@ struct UiDetails {
     char     schedule[48] = {};
     char     last[64] = {};
     char     streak[48] = {};
+    char     snooze[56] = {};   // current snooze state, empty when not snoozed
     bool     can_undo = false;
+    bool     can_snooze = false;   // false for chores that are not due or overdue
 };
 
 struct UiCallbacks {
     void (*on_tile_tap)(uint16_t id) = nullptr;
     void (*on_tile_long_press)(uint16_t id) = nullptr;
     void (*on_undo)(uint16_t id) = nullptr;
+    // kind: 0 = 15 minutes, 1 = 1 hour, 2 = until tomorrow, 3 = cancel a snooze
+    void (*on_snooze)(uint16_t id, int kind) = nullptr;
     void (*on_dev_shift_minutes)(int delta) = nullptr;
     void (*on_dev_reset)() = nullptr;
 };

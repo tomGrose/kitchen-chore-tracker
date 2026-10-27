@@ -83,8 +83,32 @@ void format_long_date(char *out, size_t size, int32_t day)
     snprintf(out, size, "%s, %s", kWeekdayLong[dateutil::weekday(day)], md);
 }
 
+// "3:15 PM" today, "tomorrow", or a weekday further out.
+void format_snooze_until(char *out, size_t size, const ChoreView &v, const DayTime &now)
+{
+    if(v.snoozeUntilDay == now.day) {
+        char t[16];
+        format_time(t, sizeof(t), v.snoozeUntilMinute);
+        snprintf(out, size, "Snoozed till %s", t);
+    }
+    else if(v.snoozeUntilDay == now.day + 1 && v.snoozeUntilMinute == 0) {
+        snprintf(out, size, "Snoozed till tomorrow");
+    }
+    else {
+        snprintf(out, size, "Snoozed till %s", weekdayShortName(dateutil::weekday(v.snoozeUntilDay)));
+    }
+}
+
 void tile_status_text(char *out, size_t size, const ChoreView &v, const Chore &chore, const DayTime &now)
 {
+    // While snoozed the tile says so instead of how late it is. The colour
+    // still carries the urgency, and the details dialog still has the full
+    // picture - this is the only feedback that the snooze actually took.
+    if(v.snoozed) {
+        format_snooze_until(out, size, v, now);
+        return;
+    }
+
     switch(v.status) {
     case Status::Overdue:
         if(v.daysOverdue >= 1) {
@@ -315,6 +339,16 @@ void on_tile_long_press(uint16_t id)
              static_cast<unsigned>(c->currentStreak), static_cast<unsigned>(c->bestStreak));
     d.can_undo = g_engine.canUndo(id);
 
+    const DayTime now = appclock::now();
+    const ChoreState st = g_engine.evaluate(*c, now);
+    d.can_snooze = st.status == Status::Overdue || st.status == Status::Due;
+    if(st.snoozed) {
+        ChoreView v;
+        v.snoozeUntilDay = st.snoozeUntilDay;
+        v.snoozeUntilMinute = st.snoozeUntilMinute;
+        format_snooze_until(d.snooze, sizeof(d.snooze), v, now);
+    }
+
     ui_main_show_details(d);
 }
 
@@ -339,6 +373,36 @@ void persist_settings()
     else if(!settings_store::save(g_settings)) {
         LOGE(TAG, "could not save settings");
     }
+}
+
+void on_snooze(uint16_t id, int kind)
+{
+    if(!appclock::isValid()) return;
+    const DayTime now = appclock::now();
+    const Chore *c = g_engine.find(id);
+
+    bool changed = false;
+    switch(kind) {
+    case 0: changed = g_engine.snooze(id, dateutil::addMinutes(now, 15)); break;
+    case 1: changed = g_engine.snooze(id, dateutil::addMinutes(now, 60)); break;
+    case 2: {
+        // "Tomorrow" means the start of tomorrow, so it stops bothering you for
+        // the rest of today. Quiet hours cover the small hours either way.
+        DayTime tomorrow;
+        tomorrow.day = now.day + 1;
+        tomorrow.minute = 0;
+        changed = g_engine.snooze(id, tomorrow);
+        break;
+    }
+    default: changed = g_engine.clearSnooze(id); break;
+    }
+
+    if(changed) {
+        LOGI(TAG, "%s \"%s\"", kind == 3 ? "cancelled the snooze on" : "snoozed",
+             c ? c->name.c_str() : "?");
+        persist();
+    }
+    refresh_ui(now);
 }
 
 void on_dev_shift_minutes(int delta)
@@ -414,6 +478,7 @@ void init()
     callbacks.on_tile_tap = on_tile_tap;
     callbacks.on_tile_long_press = on_tile_long_press;
     callbacks.on_undo = on_undo;
+    callbacks.on_snooze = on_snooze;
     callbacks.on_dev_shift_minutes = on_dev_shift_minutes;
     callbacks.on_dev_reset = on_dev_reset;
     ui_main_create(callbacks);

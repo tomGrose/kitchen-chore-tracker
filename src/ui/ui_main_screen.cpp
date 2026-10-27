@@ -11,6 +11,9 @@ namespace {
 constexpr int HEADER_H = 96;
 constexpr int DEV_H = 40;
 constexpr int GRID_PAD = 8;
+constexpr int DETAILS_W = 620;      // details dialog card
+constexpr int DETAILS_H = 410;
+constexpr int DETAILS_PAD = 22;
 constexpr int TILE_W = 190;     // 4 tiles + 3 gaps of 8 fit the 784 px inner width exactly
 constexpr int TILE_H = 160;
 constexpr int TILE_PAD = 10;
@@ -254,6 +257,14 @@ void on_overlay_click(lv_event_t *e)
     close_details();
 }
 
+void on_snooze_click(lv_event_t *e)
+{
+    const int kind = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(e)));
+    const uint16_t id = s_details_id;
+    close_details();
+    if(s_cb.on_snooze != nullptr) s_cb.on_snooze(id, kind);
+}
+
 void on_close_click(lv_event_t *e)
 {
     (void)e;
@@ -268,12 +279,13 @@ void on_undo_click(lv_event_t *e)
     if(s_cb.on_undo != nullptr) s_cb.on_undo(id);
 }
 
-lv_obj_t *make_button(lv_obj_t *parent, const char *text, int width, int height, uint32_t color, lv_event_cb_t cb)
+lv_obj_t *make_button(lv_obj_t *parent, const char *text, int width, int height, uint32_t color,
+                      lv_event_cb_t cb, void *user_data = nullptr)
 {
     lv_obj_t *button = lv_button_create(parent);
     lv_obj_set_size(button, width, height);
     lv_obj_set_style_bg_color(button, lv_color_hex(color), 0);
-    lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user_data);
 
     lv_obj_t *label = lv_label_create(button);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
@@ -416,13 +428,13 @@ void ui_main_show_details(const UiDetails &d)
     lv_obj_add_event_cb(s_overlay, on_overlay_click, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t *card = lv_obj_create(s_overlay);
-    lv_obj_set_size(card, 600, 330);
+    lv_obj_set_size(card, DETAILS_W, DETAILS_H);
     lv_obj_center(card);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(card, 18, 0);
     lv_obj_set_style_border_width(card, 0, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x1E2530), 0);
-    lv_obj_set_style_pad_all(card, 22, 0);
+    lv_obj_set_style_pad_all(card, DETAILS_PAD, 0);
 
     lv_obj_t *title = lv_label_create(card);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_40, 0);
@@ -437,6 +449,37 @@ void ui_main_show_details(const UiDetails &d)
     lv_obj_set_style_text_line_space(lines, 10, 0);
     lv_label_set_text_fmt(lines, "Schedule: %s\n%s\n%s", d.schedule, d.last, d.streak);
     lv_obj_align(lines, LV_ALIGN_TOP_LEFT, 0, 66);
+
+    // Snooze row: only meaningful for something that is actually asking for
+    // attention, so it is hidden entirely for upcoming and done chores.
+    if(d.can_snooze) {
+        const bool snoozed = d.snooze[0] != '\0';
+
+        lv_obj_t *snooze_label = lv_label_create(card);
+        lv_obj_set_style_text_font(snooze_label, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(snooze_label, lv_color_hex(COLOR_TEXT_DIM), 0);
+        lv_label_set_text(snooze_label, snoozed ? d.snooze : "Snooze nagging for");
+        lv_obj_align(snooze_label, LV_ALIGN_TOP_LEFT, 0, 186);
+
+        // Laid out as one row across the card's content width, sized to fit
+        // however many buttons there are, rather than each positioned by hand.
+        struct SnoozeButton { const char *text; int kind; };
+        SnoozeButton buttons[4];
+        int count = 0;
+        buttons[count++] = {"15 min", 0};
+        buttons[count++] = {"1 hour", 1};
+        buttons[count++] = {"Tomorrow", 2};
+        if(snoozed) buttons[count++] = {"Cancel", 3};
+
+        const int gap = 10;
+        const int content_w = DETAILS_W - 2 * DETAILS_PAD;
+        const int width = (content_w - gap * (count - 1)) / count;
+        for(int i = 0; i < count; ++i) {
+            lv_obj_t *button = make_button(card, buttons[i].text, width, 56, 0x37474F, on_snooze_click,
+                                           reinterpret_cast<void *>(static_cast<intptr_t>(buttons[i].kind)));
+            lv_obj_align(button, LV_ALIGN_TOP_LEFT, i * (width + gap), 218);
+        }
+    }
 
     lv_obj_t *undo = make_button(card, "Undo last completion", 320, 60, 0xB23A3A, on_undo_click);
     lv_obj_align(undo, LV_ALIGN_BOTTOM_LEFT, 0, 0);

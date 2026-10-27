@@ -27,6 +27,19 @@ ChoreState ChoreEngine::evaluate(const Chore &chore, const DayTime &now) const
 {
     ChoreState state;
 
+    // A snooze that has passed is simply ignored; it is cleared lazily rather
+    // than needing a sweep, so nothing has to run on a timer to expire it.
+    if(chore.snoozeUntilDay != NO_DAY) {
+        DayTime until;
+        until.day = chore.snoozeUntilDay;
+        until.minute = chore.snoozeUntilMinute;
+        if(dateutil::isBefore(now, until)) {
+            state.snoozed = true;
+            state.snoozeUntilDay = chore.snoozeUntilDay;
+            state.snoozeUntilMinute = chore.snoozeUntilMinute;
+        }
+    }
+
     // Everything up to and including this day is already satisfied.
     int32_t satisfiedThrough = NO_DAY;
     if(chore.lastCompletedDay != NO_DAY) satisfiedThrough = chore.lastCompletedDay;
@@ -79,6 +92,9 @@ std::vector<ChoreView> ChoreEngine::buildView(const DayTime &now) const
         ChoreView v;
         v.id = c.id;
         v.status = st.status;
+        v.snoozed = st.snoozed;
+        v.snoozeUntilDay = st.snoozeUntilDay;
+        v.snoozeUntilMinute = st.snoozeUntilMinute;
         v.daysOverdue = st.daysOverdue;
         v.nextDay = st.nextDay;
         v.streak = (st.status == Status::Overdue && st.daysOverdue > 0) ? 0 : c.currentStreak;
@@ -128,6 +144,8 @@ bool ChoreEngine::complete(uint16_t id, const DayTime &now, const std::string &b
     h.prevCoversDay = c->coversDay;
     h.prevStreak = c->currentStreak;
     h.prevBest = c->bestStreak;
+    h.prevSnoozeUntilDay = c->snoozeUntilDay;
+    h.prevSnoozeUntilMinute = c->snoozeUntilMinute;
 
     uint16_t streak = c->currentStreak;
     int32_t covers = NO_DAY;
@@ -149,8 +167,28 @@ bool ChoreEngine::complete(uint16_t id, const DayTime &now, const std::string &b
     c->completedBy = by;
     c->currentStreak = streak;
     if(streak > c->bestStreak) c->bestStreak = streak;
+    c->snoozeUntilDay = NO_DAY;   // done is done; nothing left to snooze
+    c->snoozeUntilMinute = 0;
 
     data_.history.push_back(h);
+    return true;
+}
+
+bool ChoreEngine::snooze(uint16_t id, const DayTime &until)
+{
+    Chore *c = findMutable(id);
+    if(c == nullptr || !c->enabled) return false;
+    c->snoozeUntilDay = until.day;
+    c->snoozeUntilMinute = until.minute;
+    return true;
+}
+
+bool ChoreEngine::clearSnooze(uint16_t id)
+{
+    Chore *c = findMutable(id);
+    if(c == nullptr) return false;
+    c->snoozeUntilDay = NO_DAY;
+    c->snoozeUntilMinute = 0;
     return true;
 }
 
@@ -176,6 +214,8 @@ bool ChoreEngine::undoLast(uint16_t id)
         c->coversDay = h.prevCoversDay;
         c->currentStreak = h.prevStreak;
         c->bestStreak = h.prevBest;
+        c->snoozeUntilDay = h.prevSnoozeUntilDay;
+        c->snoozeUntilMinute = h.prevSnoozeUntilMinute;
         data_.history.erase(data_.history.begin() + static_cast<std::ptrdiff_t>(i));
         return true;
     }

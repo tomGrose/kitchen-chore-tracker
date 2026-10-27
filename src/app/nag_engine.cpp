@@ -28,6 +28,7 @@ NagDecision NagEngine::evaluate(const std::vector<ChoreView> &views, const dateu
     // first match is the one most worth pointing at.
     for(const ChoreView &v : views) {
         if(v.status != Status::Overdue && v.status != Status::Due) continue;
+        if(v.snoozed) continue;   // still outstanding, just asked to be left alone
         ++d.attentionCount;
         if(d.leadChoreId == 0) d.leadChoreId = v.id;
     }
