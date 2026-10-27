@@ -323,7 +323,7 @@ static void test_json()
     CHECK(!chorejson::parse("not json", 8, untouched));
     // v3 stands for "a version this build does not know". v2 used to serve that
     // role and is now the current schema, so the check moved up.
-    CHECK(!chorejson::parse("{\"v\":3,\"chores\":[]}", 19, untouched));
+    CHECK(!chorejson::parse("{\"v\":4,\"chores\":[]}", 19, untouched));
     CHECK(!chorejson::parse("{\"v\":1}", 7, untouched));
     CHECK(!chorejson::parse("{\"v\":1,\"chores\":[{\"id\":1,\"sched\":{\"t\":\"bogus\"}}]}", 49, untouched));
     CHECK(untouched.nextId == 77);
@@ -509,6 +509,116 @@ static void test_snooze_json()
     CHECK(old.chores.size() == 1 && old.chores[0].currentStreak == 3);
 }
 
+static void test_skip()
+{
+    const int32_t thu = D(2026, 10, 22);
+    const int32_t next_thu = thu + 7;
+    ChoreEngine e;
+    e.data() = seedChoreData(thu);
+
+    NagConfig cfg;
+    cfg.nagIntervalMinutes = 30;
+    NagEngine nag;
+    nag.setConfig(cfg);
+
+    DayTime now = at(thu, 12 * 60);
+    CHECK(statusOf(e, VAC_THU, now) == Status::Due);
+    const uint16_t streak_before = e.find(VAC_THU)->currentStreak;
+
+    // Skipping satisfies the occurrence without claiming it was done.
+    CHECK(e.skip(VAC_THU, now));
+    ChoreState st = e.evaluate(*e.find(VAC_THU), now);
+    CHECK(st.status == Status::Done);
+    CHECK(st.skipped);
+    CHECK(e.find(VAC_THU)->lastCompletedDay == NO_DAY);     // never recorded as done
+    CHECK(e.find(VAC_THU)->currentStreak == streak_before); // neither credit nor penalty
+
+    // It stops nagging, and does not go overdue later in the day.
+    CHECK(nag.evaluate(e.buildView(now), now).attentionCount == 1);   // only Clean bathroom
+    CHECK(statusOf(e, VAC_THU, at(thu, 23 * 60)) == Status::Done);
+
+    // The schedule carries on: next Thursday is due as normal.
+    CHECK(statusOf(e, VAC_THU, at(thu + 1)) == Status::Upcoming);
+    CHECK(statusOf(e, VAC_THU, at(next_thu)) == Status::Due);
+
+    // Un-skipping puts it straight back.
+    CHECK(e.unskip(VAC_THU));
+    CHECK(statusOf(e, VAC_THU, now) == Status::Due);
+    CHECK(!e.evaluate(*e.find(VAC_THU), now).skipped);
+
+    // Actually doing it overrides a skip, and undo restores the skip.
+    CHECK(e.skip(VAC_THU, now));
+    CHECK(e.complete(VAC_THU, now, "Tom"));
+    CHECK(e.find(VAC_THU)->skippedDay == NO_DAY);
+    CHECK(!e.evaluate(*e.find(VAC_THU), now).skipped);
+    CHECK(e.undoLast(VAC_THU));
+    CHECK(e.evaluate(*e.find(VAC_THU), now).skipped);
+    CHECK(e.unskip(VAC_THU));
+
+    // Skipping ahead: an upcoming chore skips its next occurrence.
+    CHECK(statusOf(e, PLANTS, now) == Status::Upcoming);      // Friday
+    CHECK(e.skip(PLANTS, now));
+    CHECK(statusOf(e, PLANTS, at(thu + 1)) == Status::Done);  // Friday no longer asks
+    CHECK(statusOf(e, PLANTS, at(thu + 8)) == Status::Due);   // the Friday after is
+
+    // A snooze is pointless once skipped, so it is cleared.
+    CHECK(e.snooze(BATH, dateutil::addMinutes(now, 60)));
+    CHECK(e.evaluate(*e.find(BATH), now).snoozed);
+    CHECK(e.skip(BATH, now));
+    CHECK(!e.evaluate(*e.find(BATH), now).snoozed);
+}
+
+static void test_skip_labels()
+{
+    Schedule daily;
+    daily.type = ScheduleType::Daily;
+    CHECK(strcmp(skipLabel(daily), "Skip today") == 0);
+
+    Schedule weekly;
+    weekly.type = ScheduleType::Weekdays;
+    weekly.weekdayMask = 1u << 4;                  // Thursday only
+    CHECK(strcmp(skipLabel(weekly), "Skip this week") == 0);
+
+    Schedule twice;
+    twice.type = ScheduleType::Weekdays;
+    twice.weekdayMask = (1u << 2) | (1u << 4);     // Tue and Thu
+    CHECK(strcmp(skipLabel(twice), "Skip this one") == 0);
+
+    Schedule fortnightly;
+    fortnightly.type = ScheduleType::EveryNWeeks;
+    CHECK(strcmp(skipLabel(fortnightly), "Skip this week") == 0);
+
+    Schedule monthly;
+    monthly.type = ScheduleType::Monthly;
+    CHECK(strcmp(skipLabel(monthly), "Skip this month") == 0);
+}
+
+static void test_skip_json()
+{
+    const int32_t thu = D(2026, 10, 22);
+    ChoreEngine e;
+    e.data() = seedChoreData(thu);
+    const DayTime now = at(thu, 12 * 60);
+    CHECK(e.skip(VAC_THU, now));
+
+    const std::string json = chorejson::serialize(e.data());
+    ChoreData back;
+    CHECK(chorejson::parse(json.c_str(), json.size(), back));
+    ChoreEngine r;
+    r.data() = back;
+    CHECK(r.evaluate(*r.find(VAC_THU), now).skipped);
+    CHECK(statusOf(r, VAC_THU, at(thu + 7)) == Status::Due);
+
+    // A v2 file still loads, with nothing skipped.
+    ChoreData v2;
+    const char *text = "{\"v\":2,\"nextId\":2,\"chores\":[{\"id\":1,\"name\":\"Mop\","
+                       "\"sched\":{\"t\":\"daily\"},\"due\":-1,\"start\":0,\"cs\":2,\"bs\":5,\"en\":true}]}";
+    CHECK(chorejson::parse(text, strlen(text), v2));
+    CHECK(v2.chores.size() == 1);
+    CHECK(v2.chores.size() == 1 && v2.chores[0].skippedDay == NO_DAY);
+    CHECK(v2.chores.size() == 1 && v2.chores[0].bestStreak == 5);
+}
+
 int main()
 {
     test_dates();
@@ -524,6 +634,9 @@ int main()
     test_minute_math();
     test_snooze();
     test_snooze_json();
+    test_skip();
+    test_skip_labels();
+    test_skip_json();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

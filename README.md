@@ -64,7 +64,19 @@ backlight during writes to hide it.
 Set it to zero and GDMA reads PSRAM directly, which it cannot sustain — constant tearing
 at 24 MHz, and still tearing at 15 MHz in both FULL and DIRECT render modes.
 
+## Documentation
+
+| File | What it is |
+|---|---|
+| `CLAUDE.md` | Working agreement, and the three constraints that bite |
+| `docs/progress-log.md` | Current status, every decision, and what was tried and rejected |
+| `docs/firmware-reference.md` | Architecture, module map, engine semantics, invariants |
+| `docs/chore-tracker-spec.md` | Product and technical spec |
+| `docs/hardware-reference.md` | Pin mappings, display timings, board revision |
+| `docs/chores.md` | The chore list and household settings |
+
 ## Status
 
-Phase 2 of 6 complete — chore engine, persistence, and the main screen all verified on
-hardware. Phase 3 is time and reminders (NTP, nagging, quiet hours).
+Phase 3 of 6 complete and verified on hardware: chore engine, SD-backed persistence, the
+main screen, Wi-Fi, NTP with DST, nagging, quiet hours, snooze and skip. Chimes deferred.
+Phase 4 is the web config page.

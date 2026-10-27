@@ -40,10 +40,16 @@ ChoreState ChoreEngine::evaluate(const Chore &chore, const DayTime &now) const
         }
     }
 
-    // Everything up to and including this day is already satisfied.
+    // Everything up to and including this day is already satisfied, whether by
+    // doing it, by an early completion covering it, or by a deliberate skip.
     int32_t satisfiedThrough = NO_DAY;
     if(chore.lastCompletedDay != NO_DAY) satisfiedThrough = chore.lastCompletedDay;
     if(chore.coversDay != NO_DAY && chore.coversDay > satisfiedThrough) satisfiedThrough = chore.coversDay;
+    if(chore.skippedDay != NO_DAY && chore.skippedDay > satisfiedThrough) satisfiedThrough = chore.skippedDay;
+
+    // True while the skip is the most recent thing satisfying this chore, so
+    // the screen can say "Skipped" instead of claiming it was done.
+    state.skipped = chore.skippedDay != NO_DAY && chore.skippedDay == satisfiedThrough;
 
     int32_t from = chore.startDay;
     if(satisfiedThrough != NO_DAY && satisfiedThrough + 1 > from) from = satisfiedThrough + 1;
@@ -67,7 +73,8 @@ ChoreState ChoreEngine::evaluate(const Chore &chore, const DayTime &now) const
     }
 
     state.nextDay = pending;   // NO_DAY if the schedule has no future occurrence
-    const bool doneToday = chore.lastCompletedDay == now.day || chore.coversDay == now.day;
+    const bool doneToday = chore.lastCompletedDay == now.day || chore.coversDay == now.day ||
+                           chore.skippedDay == now.day;
     state.status = doneToday ? Status::Done : Status::Upcoming;
     return state;
 }
@@ -92,6 +99,7 @@ std::vector<ChoreView> ChoreEngine::buildView(const DayTime &now) const
         ChoreView v;
         v.id = c.id;
         v.status = st.status;
+        v.skipped = st.skipped;
         v.snoozed = st.snoozed;
         v.snoozeUntilDay = st.snoozeUntilDay;
         v.snoozeUntilMinute = st.snoozeUntilMinute;
@@ -131,8 +139,10 @@ bool ChoreEngine::complete(uint16_t id, const DayTime &now, const std::string &b
     Chore *c = findMutable(id);
     if(c == nullptr || !c->enabled) return false;
 
-    const ChoreState st = evaluate(*c, now);
-    if(st.status == Status::Done) return false;
+    const ChoreState before = evaluate(*c, now);
+    // A skipped chore can still be done: changing your mind and doing it anyway
+    // should record properly, not be refused because the skip satisfied it.
+    if(before.status == Status::Done && !before.skipped) return false;
 
     HistoryEntry h;
     h.choreId = id;
@@ -146,6 +156,12 @@ bool ChoreEngine::complete(uint16_t id, const DayTime &now, const std::string &b
     h.prevBest = c->bestStreak;
     h.prevSnoozeUntilDay = c->snoozeUntilDay;
     h.prevSnoozeUntilMinute = c->snoozeUntilMinute;
+    h.prevSkippedDay = c->skippedDay;
+
+    // Clear the skip before working out the streak, so the occurrence that was
+    // skipped is the one being credited rather than the one after it.
+    if(before.skipped) c->skippedDay = NO_DAY;
+    const ChoreState st = evaluate(*c, now);
 
     uint16_t streak = c->currentStreak;
     int32_t covers = NO_DAY;
@@ -169,8 +185,35 @@ bool ChoreEngine::complete(uint16_t id, const DayTime &now, const std::string &b
     if(streak > c->bestStreak) c->bestStreak = streak;
     c->snoozeUntilDay = NO_DAY;   // done is done; nothing left to snooze
     c->snoozeUntilMinute = 0;
+    c->skippedDay = NO_DAY;       // actually doing it overrides having skipped it
 
     data_.history.push_back(h);
+    return true;
+}
+
+bool ChoreEngine::skip(uint16_t id, const DayTime &now)
+{
+    Chore *c = findMutable(id);
+    if(c == nullptr || !c->enabled) return false;
+
+    const ChoreState st = evaluate(*c, now);
+    // Whichever occurrence is in question: the one that is due or late, or the
+    // one coming up if this is being skipped ahead of time.
+    const int32_t target = st.pendingDay != NO_DAY ? st.pendingDay : st.nextDay;
+    if(target == NO_DAY) return false;
+    if(st.status == Status::Done) return false;
+
+    c->skippedDay = target;
+    c->snoozeUntilDay = NO_DAY;   // nothing left to hold off
+    c->snoozeUntilMinute = 0;
+    return true;
+}
+
+bool ChoreEngine::unskip(uint16_t id)
+{
+    Chore *c = findMutable(id);
+    if(c == nullptr || c->skippedDay == NO_DAY) return false;
+    c->skippedDay = NO_DAY;
     return true;
 }
 
@@ -216,6 +259,7 @@ bool ChoreEngine::undoLast(uint16_t id)
         c->bestStreak = h.prevBest;
         c->snoozeUntilDay = h.prevSnoozeUntilDay;
         c->snoozeUntilMinute = h.prevSnoozeUntilMinute;
+        c->skippedDay = h.prevSkippedDay;
         data_.history.erase(data_.history.begin() + static_cast<std::ptrdiff_t>(i));
         return true;
     }

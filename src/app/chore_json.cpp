@@ -39,9 +39,9 @@ bool typeFromName(const char *name, ScheduleType &out)
 std::string serialize(const ChoreData &data)
 {
     JsonDocument doc;
-    // v2 added the per-chore snooze. v1 files still load: the fields are simply
-    // absent and default to "not snoozed".
-    doc["v"] = 2;
+    // v2 added the per-chore snooze, v3 the skipped occurrence. Older files
+    // still load: the fields are simply absent and default to "not set".
+    doc["v"] = 3;
     doc["nextId"] = data.nextId;
 
     // Strings are referenced, not copied, until serializeJson() below; the
@@ -79,6 +79,7 @@ std::string serialize(const ChoreData &data)
             o["lastMin"] = c.lastCompletedMinute;
         }
         if(c.coversDay != NO_DAY) o["covers"] = c.coversDay;
+        if(c.skippedDay != NO_DAY) o["sk"] = c.skippedDay;
         if(!c.completedBy.empty()) o["by"] = c.completedBy.c_str();
         o["cs"] = c.currentStreak;
         o["bs"] = c.bestStreak;
@@ -107,6 +108,7 @@ std::string serialize(const ChoreData &data)
             o["pz"] = h.prevSnoozeUntilDay;
             o["pzm"] = h.prevSnoozeUntilMinute;
         }
+        if(h.prevSkippedDay != NO_DAY) o["pk"] = h.prevSkippedDay;
     }
 
     const size_t length = measureJson(doc);
@@ -120,7 +122,7 @@ bool parse(const char *json, size_t length, ChoreData &out)
     JsonDocument doc;
     if(deserializeJson(doc, json, length)) return false;
     const int version = doc["v"] | 0;
-    if(version != 1 && version != 2) return false;
+    if(version < 1 || version > 3) return false;
     if(!doc["chores"].is<JsonArray>()) return false;
 
     ChoreData result;
@@ -150,6 +152,7 @@ bool parse(const char *json, size_t length, ChoreData &out)
         c.currentStreak = static_cast<uint16_t>(o["cs"] | 0);
         c.bestStreak = static_cast<uint16_t>(o["bs"] | 0);
         c.enabled = o["en"] | true;
+        c.skippedDay = o["sk"].isNull() ? NO_DAY : o["sk"].as<int32_t>();
         c.snoozeUntilDay = o["sz"].isNull() ? NO_DAY : o["sz"].as<int32_t>();
         c.snoozeUntilMinute = static_cast<int16_t>(o["szMin"] | 0);
 
@@ -168,6 +171,7 @@ bool parse(const char *json, size_t length, ChoreData &out)
         h.prevCoversDay = o["pc"].isNull() ? NO_DAY : o["pc"].as<int32_t>();
         h.prevStreak = static_cast<uint16_t>(o["ps"] | 0);
         h.prevBest = static_cast<uint16_t>(o["pb"] | 0);
+        h.prevSkippedDay = o["pk"].isNull() ? NO_DAY : o["pk"].as<int32_t>();
         h.prevSnoozeUntilDay = o["pz"].isNull() ? NO_DAY : o["pz"].as<int32_t>();
         h.prevSnoozeUntilMinute = static_cast<int16_t>(o["pzm"] | 0);
         result.history.push_back(h);

@@ -9,7 +9,7 @@
 
 #include <vector>
 
-enum class UiTileState : uint8_t { Overdue, Due, Upcoming, Done };
+enum class UiTileState : uint8_t { Overdue, Due, Upcoming, Done, Skipped };
 
 struct UiTile {
     uint16_t    id = 0;
@@ -17,6 +17,12 @@ struct UiTile {
     char        status[40] = {};
     UiTileState state = UiTileState::Upcoming;
     uint16_t    streak = 0;
+};
+
+// One chore that is not on today's board, shown as a small chip underneath it.
+struct UiChip {
+    uint16_t id = 0;
+    char     text[40] = {};   // "Tue - Grocery store"
 };
 
 struct UiHeader {
@@ -36,12 +42,20 @@ struct UiDetails {
     char     streak[48] = {};
     char     snooze[56] = {};   // current snooze state, empty when not snoozed
     bool     can_undo = false;
-    bool     can_snooze = false;   // false for chores that are not due or overdue
+    bool     can_snooze = false;    // false for chores that are not due or overdue
+    bool     can_complete = false;  // offer "Mark done", e.g. doing something early
+    bool     can_skip = false;
+    bool     is_skipped = false;    // button reads "Un-skip" instead
+    char     skip_label[24] = {};   // "Skip this week", "Skip today", ...
 };
 
 struct UiCallbacks {
     void (*on_tile_tap)(uint16_t id) = nullptr;
-    void (*on_tile_long_press)(uint16_t id) = nullptr;
+    // Long-press on a tile, or a tap on an upcoming chip.
+    void (*on_show_details)(uint16_t id) = nullptr;
+    void (*on_mark_done)(uint16_t id) = nullptr;
+    // Toggles: skips the current occurrence, or clears a skip already set.
+    void (*on_skip)(uint16_t id) = nullptr;
     void (*on_undo)(uint16_t id) = nullptr;
     // kind: 0 = 15 minutes, 1 = 1 hour, 2 = until tomorrow, 3 = cancel a snooze
     void (*on_snooze)(uint16_t id, int kind) = nullptr;
@@ -56,7 +70,10 @@ void ui_main_create(const UiCallbacks &callbacks);
 // `nag` makes every overdue/due tile flash its border instead - a deliberately
 // different motion from the completion pop, so one gesture never means both
 // "well done" and "you are late".
-void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles, uint16_t pulse_id,
-                    bool nag = false);
+// `tiles` is today's board, in the order the caller wants them drawn - the UI
+// never re-sorts, so a tile never moves while someone is using the screen.
+// `chips` are the chores not due today, shown compactly underneath.
+void ui_main_update(const UiHeader &header, const std::vector<UiTile> &tiles,
+                    const std::vector<UiChip> &chips, uint16_t pulse_id, bool nag = false);
 
 void ui_main_show_details(const UiDetails &details);

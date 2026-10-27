@@ -37,6 +37,13 @@ Settings g_settings;
 bool g_storage_ok = false;
 DayTime g_last_shown = {-1, -1};
 bool g_time_ready = false;   // set on the first valid clock reading after boot
+
+// Today's board: which chores are on screen, and in what order. Decided once at
+// day rollover and then left alone, so completing something never reorders the
+// grid and a tile never moves under your finger. Chores completed early from
+// the upcoming strip are appended, never inserted.
+std::vector<uint16_t> g_board_ids;
+int32_t g_board_day = NO_DAY;
 uint16_t g_pulse_id = 0;
 bool g_nag_flash = false;   // flash the attention tiles on the next refresh
 uint32_t g_last_tick = 0;
@@ -104,6 +111,10 @@ void tile_status_text(char *out, size_t size, const ChoreView &v, const Chore &c
     // While snoozed the tile says so instead of how late it is. The colour
     // still carries the urgency, and the details dialog still has the full
     // picture - this is the only feedback that the snooze actually took.
+    if(v.skipped) {
+        snprintf(out, size, "Skipped");
+        return;
+    }
     if(v.snoozed) {
         format_snooze_until(out, size, v, now);
         return;
@@ -213,6 +224,39 @@ void flush_save_if_due()
     flush_save_now();
 }
 
+bool on_board(uint16_t id)
+{
+    for(uint16_t x : g_board_ids) if(x == id) return true;
+    return false;
+}
+
+void add_to_board(uint16_t id)
+{
+    if(!on_board(id)) g_board_ids.push_back(id);
+}
+
+// Rebuilt only when the day changes. buildView is sorted worst-first, so the
+// board starts in urgency order and then stays put for the rest of the day.
+void ensure_board(const DayTime &now)
+{
+    if(g_board_day == now.day) return;
+    g_board_ids.clear();
+    for(const ChoreView &v : g_engine.buildView(now)) {
+        if(v.status != Status::Upcoming) g_board_ids.push_back(v.id);
+    }
+    g_board_day = now.day;
+    LOGI(TAG, "board for the day: %u chore(s)", static_cast<unsigned>(g_board_ids.size()));
+}
+
+// "Tomorrow", "Fri", or "Nov 4" - what goes on an upcoming chip.
+void format_when(char *out, size_t size, int32_t day, const DayTime &now)
+{
+    if(day == NO_DAY) snprintf(out, size, "someday");
+    else if(day == now.day + 1) snprintf(out, size, "Tomorrow");
+    else if(day - now.day <= 6) snprintf(out, size, "%s", weekdayShortName(dateutil::weekday(day)));
+    else format_month_day(out, size, day);
+}
+
 // Shown until SNTP answers. The board has no RTC, so before the first sync the
 // date is 1970 and every chore would look years overdue - better to show
 // nothing than to show a screen full of false alarms.
@@ -229,7 +273,7 @@ void refresh_waiting_ui()
     snprintf(header.dev, sizeof(header.dev), "%s - %s", offset, fsbackend::name());
     header.time_valid = false;
 
-    ui_main_update(header, {}, 0);
+    ui_main_update(header, {}, {}, 0);
 }
 
 void refresh_ui(const DayTime &now)
@@ -253,20 +297,43 @@ void refresh_ui(const DayTime &now)
     snprintf(header.dev, sizeof(header.dev), "%s %s - %s%s", dev_day, offset, fsbackend::name(),
              isQuietMinute(now.minute, g_settings.quietStartMinute, g_settings.quietEndMinute) ? " - quiet" : "");
 
+    ensure_board(now);
+    const std::vector<ChoreView> views = g_engine.buildView(now);
+
+    // The board is drawn in its stored order, not the sorted one.
     std::vector<UiTile> tiles;
-    for(const ChoreView &v : g_engine.buildView(now)) {
-        const Chore *c = g_engine.find(v.id);
-        if(c == nullptr) continue;
+    for(uint16_t id : g_board_ids) {
+        const ChoreView *v = nullptr;
+        for(const ChoreView &candidate : views) if(candidate.id == id) v = &candidate;
+        const Chore *c = g_engine.find(id);
+        if(v == nullptr || c == nullptr) continue;   // chore removed since the board was built
+
         UiTile t;
-        t.id = v.id;
+        t.id = id;
         snprintf(t.name, sizeof(t.name), "%s", c->name.c_str());
-        tile_status_text(t.status, sizeof(t.status), v, *c, now);
-        t.state = to_ui_state(v.status);
-        t.streak = v.streak;
+        tile_status_text(t.status, sizeof(t.status), *v, *c, now);
+        t.state = v->skipped ? UiTileState::Skipped : to_ui_state(v->status);
+        t.streak = v->streak;
         tiles.push_back(t);
     }
 
-    ui_main_update(header, tiles, g_pulse_id, g_nag_flash);
+    // Everything else, compactly, soonest first (buildView already orders
+    // upcoming chores that way).
+    std::vector<UiChip> chips;
+    for(const ChoreView &v : views) {
+        if(chips.size() >= 6) break;
+        if(on_board(v.id)) continue;
+        const Chore *c = g_engine.find(v.id);
+        if(c == nullptr) continue;
+        char when[16];
+        format_when(when, sizeof(when), v.nextDay, now);
+        UiChip chip;
+        chip.id = v.id;
+        snprintf(chip.text, sizeof(chip.text), "%s - %s", when, c->name.c_str());
+        chips.push_back(chip);
+    }
+
+    ui_main_update(header, tiles, chips, g_pulse_id, g_nag_flash);
     g_pulse_id = 0;
     g_nag_flash = false;
     g_last_shown = now;
@@ -304,6 +371,7 @@ void on_tile_tap(uint16_t id)
     const Chore *c = g_engine.find(id);
     if(g_engine.complete(id, now, cfg::DEFAULT_USER)) {
         LOGI(TAG, "completed \"%s\" (streak %u)", c ? c->name.c_str() : "?", c ? static_cast<unsigned>(c->currentStreak) : 0U);
+        add_to_board(id);   // doing something early should show up, at the end
         g_pulse_id = id;
         persist();
     }
@@ -313,7 +381,7 @@ void on_tile_tap(uint16_t id)
     refresh_ui(now);
 }
 
-void on_tile_long_press(uint16_t id)
+void on_show_details(uint16_t id)
 {
     if(!appclock::isValid()) return;
     const Chore *c = g_engine.find(id);
@@ -342,6 +410,14 @@ void on_tile_long_press(uint16_t id)
     const DayTime now = appclock::now();
     const ChoreState st = g_engine.evaluate(*c, now);
     d.can_snooze = st.status == Status::Overdue || st.status == Status::Due;
+    // Offered for anything not already done, which is how an upcoming chore
+    // reached from the chip strip gets completed early.
+    d.can_complete = st.status != Status::Done || st.skipped;
+    // Skipping is offered for anything not already satisfied, including an
+    // upcoming chore reached from the chip strip - "I know I'm not doing it".
+    d.can_skip = st.status != Status::Done || st.skipped;
+    d.is_skipped = st.skipped;
+    snprintf(d.skip_label, sizeof(d.skip_label), "%s", skipLabel(c->schedule));
     if(st.snoozed) {
         ChoreView v;
         v.snoozeUntilDay = st.snoozeUntilDay;
@@ -405,6 +481,23 @@ void on_snooze(uint16_t id, int kind)
     refresh_ui(now);
 }
 
+void on_skip(uint16_t id)
+{
+    if(!appclock::isValid()) return;
+    const DayTime now = appclock::now();
+    const Chore *c = g_engine.find(id);
+    if(c == nullptr) return;
+    const bool was_skipped = g_engine.evaluate(*c, now).skipped;
+
+    const bool changed = was_skipped ? g_engine.unskip(id) : g_engine.skip(id, now);
+    if(changed) {
+        LOGI(TAG, "%s \"%s\"", was_skipped ? "un-skipped" : "skipped", c->name.c_str());
+        add_to_board(id);   // skipping an upcoming chore should be visible
+        persist();
+    }
+    refresh_ui(now);
+}
+
 void on_dev_shift_minutes(int delta)
 {
     g_settings.devOffsetMinutes += delta;
@@ -428,6 +521,7 @@ void on_dev_reset()
     g_settings.devOffsetMinutes = 0;
     appclock::setDevOffsetMinutes(0);
     g_nag.reset();
+    g_board_day = NO_DAY;
     persist_settings();
     if(!appclock::isValid()) {
         // Reseeding needs today's date; the clock will do it when it syncs.
@@ -476,7 +570,9 @@ void init()
 
     UiCallbacks callbacks;
     callbacks.on_tile_tap = on_tile_tap;
-    callbacks.on_tile_long_press = on_tile_long_press;
+    callbacks.on_show_details = on_show_details;
+    callbacks.on_mark_done = on_tile_tap;   // same action, reached from the details dialog
+    callbacks.on_skip = on_skip;
     callbacks.on_undo = on_undo;
     callbacks.on_snooze = on_snooze;
     callbacks.on_dev_shift_minutes = on_dev_shift_minutes;

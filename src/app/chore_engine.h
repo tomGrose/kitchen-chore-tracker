@@ -30,6 +30,7 @@ enum class Status : uint8_t { Overdue = 0, Due = 1, Upcoming = 2, Done = 3 };
 
 struct ChoreState {
     Status  status = Status::Upcoming;
+    bool    skipped = false;                // satisfied by a skip, not by doing it
     bool    snoozed = false;                // nagging held off, status unchanged
     int32_t snoozeUntilDay = dateutil::NO_DAY;
     int16_t snoozeUntilMinute = 0;
@@ -41,6 +42,7 @@ struct ChoreState {
 struct ChoreView {
     uint16_t id = 0;
     Status   status = Status::Upcoming;
+    bool     skipped = false;
     bool     snoozed = false;
     int32_t  snoozeUntilDay = dateutil::NO_DAY;
     int16_t  snoozeUntilMinute = 0;
@@ -69,6 +71,12 @@ public:
     // Mark a chore done. Returns false if it does not exist, is disabled, or is
     // already DONE.
     bool complete(uint16_t id, const dateutil::DayTime &now, const std::string &by);
+
+    // Dismiss the current (or next) occurrence without doing it. The streak is
+    // left alone: skipping is an honest choice and should not be punished like
+    // forgetting, but it earns no credit either.
+    bool skip(uint16_t id, const dateutil::DayTime &now);
+    bool unskip(uint16_t id);
 
     // Hold nagging off until `until`. Completing the chore clears it, as does
     // the moment passing.

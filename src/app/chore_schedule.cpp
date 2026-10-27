@@ -113,3 +113,24 @@ std::string describeSchedule(const Schedule &s)
     }
     return "";
 }
+
+const char *skipLabel(const Schedule &schedule)
+{
+    switch(schedule.type) {
+    case ScheduleType::Daily:
+        return "Skip today";
+    case ScheduleType::Weekdays: {
+        // One weekday a week reads as "this week"; several means the next one.
+        int days = 0;
+        for(int bit = 0; bit < 7; ++bit) if(schedule.weekdayMask & (1u << bit)) ++days;
+        return days == 1 ? "Skip this week" : "Skip this one";
+    }
+    case ScheduleType::EveryNWeeks:
+        return "Skip this week";
+    case ScheduleType::Monthly:
+        return "Skip this month";
+    case ScheduleType::EveryNDays:
+        break;
+    }
+    return "Skip this one";
+}

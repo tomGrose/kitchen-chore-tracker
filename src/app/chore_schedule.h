@@ -13,6 +13,10 @@ bool isOccurrence(const Schedule &schedule, int32_t day);
 int32_t nextOccurrenceOnOrAfter(const Schedule &schedule, int32_t from);
 
 // Human-readable description, e.g. "Weekly on Mon", "Every 2 weeks on Mon".
+// Wording for the skip button: "Skip today" for a daily chore, "Skip this
+// week" for a weekly one, and so on, so the button says what it actually does.
+const char *skipLabel(const Schedule &schedule);
+
 std::string describeSchedule(const Schedule &schedule);
 
 // Short weekday name for 0 = Sunday ... 6 = Saturday.

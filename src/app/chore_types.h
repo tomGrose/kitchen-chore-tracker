@@ -38,6 +38,10 @@ struct Chore {
     int32_t     lastCompletedDay = dateutil::NO_DAY;
     int16_t     lastCompletedMinute = 0;
     int32_t     coversDay = dateutil::NO_DAY; // occurrence satisfied by an early completion
+    // An occurrence deliberately skipped: satisfied without being done, so it
+    // never goes overdue and the schedule carries on. Kept separate from
+    // coversDay so the screen can say "Skipped" rather than claim it was done.
+    int32_t     skippedDay = dateutil::NO_DAY;
     std::string completedBy;
     uint16_t    currentStreak = 0;
     uint16_t    bestStreak = 0;
@@ -61,6 +65,7 @@ struct HistoryEntry {
     uint16_t    prevBest = 0;
     int32_t     prevSnoozeUntilDay = dateutil::NO_DAY;
     int16_t     prevSnoozeUntilMinute = 0;
+    int32_t     prevSkippedDay = dateutil::NO_DAY;
 };
 
 struct ChoreData {
